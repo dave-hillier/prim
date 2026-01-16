@@ -1,0 +1,10 @@
+/Users/davehillier/repos/microthreads/src/Prim.Core/bin/Debug/netstandard2.0/Prim.Core.deps.json
+/Users/davehillier/repos/microthreads/src/Prim.Core/bin/Debug/netstandard2.0/Prim.Core.dll
+/Users/davehillier/repos/microthreads/src/Prim.Core/bin/Debug/netstandard2.0/Prim.Core.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.csproj.AssemblyReference.cache
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.GeneratedMSBuildEditorConfig.editorconfig
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.AssemblyInfoInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.AssemblyInfo.cs
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.csproj.CoreCompileInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.dll
+/Users/davehillier/repos/microthreads/src/Prim.Core/obj/Debug/netstandard2.0/Prim.Core.pdb

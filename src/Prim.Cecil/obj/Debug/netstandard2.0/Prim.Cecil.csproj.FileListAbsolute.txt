@@ -1,0 +1,17 @@
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Cecil.deps.json
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Cecil.dll
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Cecil.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Analysis.dll
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Core.dll
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Runtime.dll
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Core.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Runtime.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/bin/Debug/netstandard2.0/Prim.Analysis.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.csproj.AssemblyReference.cache
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.GeneratedMSBuildEditorConfig.editorconfig
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.AssemblyInfoInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.AssemblyInfo.cs
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.csproj.CoreCompileInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.csproj.Up2Date
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.dll
+/Users/davehillier/repos/microthreads/src/Prim.Cecil/obj/Debug/netstandard2.0/Prim.Cecil.pdb

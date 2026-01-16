@@ -1,0 +1,10 @@
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/bin/Debug/netstandard2.0/Prim.Roslyn.deps.json
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/bin/Debug/netstandard2.0/Prim.Roslyn.dll
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/bin/Debug/netstandard2.0/Prim.Roslyn.pdb
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.csproj.AssemblyReference.cache
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.GeneratedMSBuildEditorConfig.editorconfig
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.AssemblyInfoInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.AssemblyInfo.cs
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.csproj.CoreCompileInputs.cache
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.dll
+/Users/davehillier/repos/microthreads/src/Prim.Roslyn/obj/Debug/netstandard2.0/Prim.Roslyn.pdb
