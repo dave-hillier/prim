@@ -143,5 +143,196 @@ namespace Prim.Tests.Unit
             var suspended = (ContinuationResult<int>.Suspended)result;
             Assert.NotNull(suspended.State);
         }
+
+        #region Additional Runtime Edge Cases
+
+        [Fact]
+        public void ScriptContext_MultipleRequestYields_OnlyCountsOnce()
+        {
+            var context = new ScriptContext();
+
+            context.RequestYield();
+            context.RequestYield();
+            context.RequestYield();
+
+            // YieldRequested is set to 1, multiple calls don't stack
+            Assert.Equal(1, context.YieldRequested);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithYieldValue()
+        {
+            var context = new ScriptContext();
+            context.RequestYield();
+
+            var ex = Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPoint(5, "yield data"));
+
+            Assert.Equal(5, ex.YieldPointId);
+            Assert.Equal("yield data", ex.YieldValue);
+        }
+
+        [Fact]
+        public void ScriptContext_EnsureCurrent_ReturnsSameInstance()
+        {
+            var context1 = ScriptContext.EnsureCurrent();
+            var context2 = ScriptContext.EnsureCurrent();
+
+            // Should return the same thread-local instance
+            Assert.Same(context1, context2);
+        }
+
+        [Fact]
+        public void ScriptContext_RunWith_RestoresOnException()
+        {
+            var original = ScriptContext.Current;
+            var newContext = new ScriptContext();
+
+            try
+            {
+                newContext.RunWith(() =>
+                {
+                    throw new InvalidOperationException("test");
+                });
+            }
+            catch (InvalidOperationException)
+            {
+                // Expected
+            }
+
+            // Context should be restored even after exception
+            Assert.Same(original, ScriptContext.Current);
+        }
+
+        [Fact]
+        public void ScriptContext_NotRestoringByDefault()
+        {
+            var context = new ScriptContext();
+
+            Assert.False(context.IsRestoring);
+            Assert.Null(context.FrameChain);
+            Assert.Null(context.ResumeValue);
+        }
+
+        [Fact]
+        public void ScriptContext_RestoringWithNullResumeValue()
+        {
+            var frame = new HostFrameRecord(100, 0, new object[0], null);
+            var state = new ContinuationState(frame);
+
+            var context = new ScriptContext(state, null);
+
+            Assert.True(context.IsRestoring);
+            Assert.Null(context.ResumeValue);
+        }
+
+        [Fact]
+        public void FrameCapture_PackSlots_EmptyArgs()
+        {
+            var slots = FrameCapture.PackSlots();
+
+            Assert.NotNull(slots);
+            Assert.Empty(slots);
+        }
+
+        [Fact]
+        public void FrameCapture_PackSlots_SingleArg()
+        {
+            var slots = FrameCapture.PackSlots(42);
+
+            Assert.Single(slots);
+            Assert.Equal(42, slots[0]);
+        }
+
+        [Fact]
+        public void FrameCapture_GetSlot_NullableType()
+        {
+            var slots = new object[] { null, 42 };
+
+            var nullable1 = FrameCapture.GetSlot<int?>(slots, 0);
+            var nullable2 = FrameCapture.GetSlot<int?>(slots, 1);
+
+            Assert.Null(nullable1);
+            Assert.Equal(42, nullable2);
+        }
+
+        [Fact]
+        public void FrameCapture_CaptureFrame_WithNestedCallers()
+        {
+            var grandparent = new HostFrameRecord(100, 0, new object[] { 1 }, null);
+            var parent = new HostFrameRecord(200, 1, new object[] { 2 }, grandparent);
+            var child = FrameCapture.CaptureFrame(300, 2, new object[] { 3 }, parent);
+
+            Assert.Equal(3, child.GetStackDepth());
+            Assert.Same(parent, child.Caller);
+            Assert.Same(grandparent, child.Caller.Caller);
+        }
+
+        [Fact]
+        public void FrameCapture_GenerateMethodToken_WithNoParams()
+        {
+            var token1 = FrameCapture.GenerateMethodToken("MyClass", "MyMethod");
+            var token2 = FrameCapture.GenerateMethodToken("MyClass", "MyMethod");
+
+            Assert.Equal(token1, token2);
+        }
+
+        [Fact]
+        public void FrameCapture_GenerateMethodToken_DifferentClassesDifferentTokens()
+        {
+            var token1 = FrameCapture.GenerateMethodToken("ClassA", "Method");
+            var token2 = FrameCapture.GenerateMethodToken("ClassB", "Method");
+
+            Assert.NotEqual(token1, token2);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Run_WithVoidDelegate()
+        {
+            var runner = new ContinuationRunner();
+            var executed = false;
+
+            var result = runner.Run(() =>
+            {
+                executed = true;
+                return 0; // Need to return something
+            });
+
+            Assert.True(executed);
+            Assert.True(result.IsCompleted);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Run_WithReferenceTypeResult()
+        {
+            var runner = new ContinuationRunner();
+            var testObject = new { Name = "Test", Value = 42 };
+
+            var result = runner.Run(() => testObject);
+
+            Assert.True(result.IsCompleted);
+            var completed = (ContinuationResult<object>.Completed)result;
+            Assert.Same(testObject, completed.Value);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Run_SuspendedResultContainsYieldValue()
+        {
+            var runner = new ContinuationRunner();
+
+            var result = runner.Run<int>(() =>
+            {
+                var context = ScriptContext.EnsureCurrent();
+                context.RequestYield();
+                context.HandleYieldPoint(0, "my yield value");
+                return 42;
+            });
+
+            Assert.True(result.IsSuspended);
+            var suspended = (ContinuationResult<int>.Suspended)result;
+            Assert.Equal("my yield value", suspended.YieldedValue);
+        }
+
+        #endregion
     }
 }
