@@ -1,14 +1,31 @@
 # Prim
 
-A .NET continuation framework enabling suspend/resume of program execution with serializable state. Named after the primitive building blocks in Second Life.
+A .NET continuation framework enabling suspend/resume of program execution with serializable state.
 
-## Overview
+## Why Serializable Continuations?
 
-Prim allows you to:
-- **Suspend** execution at any yield point and capture the entire call stack
-- **Serialize** the captured state to JSON or MessagePack
-- **Resume** execution from the saved state, even in a different process
-- **Migrate** running computations across processes or machines
+Most runtimes support some form of suspension (coroutines, async/await, green threads), but the captured state typically exists only in memory. **Serializable continuations** let you persist that state to disk or transmit it to another machine.
+
+This enables patterns that are otherwise difficult:
+
+- **Transparent migration** - Move running computations between servers without the code knowing it moved
+- **Durable execution** - Checkpoint long-running work and resume after crashes, without requiring deterministic replay
+- **Cooperative multithreading for untrusted code** - Run many scripts on one thread with guaranteed yield points
+
+Prim achieves this on stock .NET runtimes through program transformation. No runtime modifications required.
+
+## Background
+
+The techniques in Prim were originally developed for Second Life's Mono integration (2007-2008), where user scripts needed to migrate seamlessly between simulator processes. A script counting to a million shouldn't restart from zero just because its object crossed a region boundary.
+
+For the full technical details, design rationale, and comparison with related systems (WasmFX, Espresso, Project Loom), see the [whitepaper](docs/whitepaper.md).
+
+## What Prim Does
+
+- **Suspends** execution at yield points and captures the entire call stack
+- **Serializes** the captured state to JSON or MessagePack
+- **Resumes** execution from saved state, even in a different process
+- **Migrates** running computations across processes or machines
 
 ## Project Structure
 
