@@ -20,7 +20,7 @@ namespace Prim.Tests.Cecil
         {
             var block = new BasicBlock(0);
 
-            Assert.Equal(0, block.Index);
+            Assert.Equal(0, block.StartOffset);
             Assert.Empty(block.Instructions);
             Assert.Empty(block.Successors);
             Assert.Empty(block.Predecessors);
@@ -108,7 +108,7 @@ namespace Prim.Tests.Cecil
 
             var cfg = ControlFlowGraph.Build(method);
 
-            Assert.Equal(0, cfg.EntryBlock.Index);
+            Assert.Equal(0, cfg.EntryBlock.StartOffset);
         }
 
         [Fact]

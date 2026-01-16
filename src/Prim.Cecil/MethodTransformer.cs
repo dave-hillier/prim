@@ -31,10 +31,10 @@ namespace Prim.Cecil
         private TypeReference _hostFrameRecordType;
         private FieldReference _frameChainField;
         private FieldReference _isRestoringField;
-        private FieldReference _methodTokenField;
-        private FieldReference _yieldPointIdField;
-        private FieldReference _slotsField;
-        private FieldReference _callerField;
+        private MethodReference _methodTokenField;
+        private MethodReference _yieldPointIdField;
+        private MethodReference _slotsField;
+        private MethodReference _callerField;
 
         public MethodTransformer(MethodDefinition method, RewriterOptions options)
         {

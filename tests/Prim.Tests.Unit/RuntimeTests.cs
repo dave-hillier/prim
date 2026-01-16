@@ -169,7 +169,7 @@ namespace Prim.Tests.Unit
                 context.HandleYieldPoint(5, "yield data"));
 
             Assert.Equal(5, ex.YieldPointId);
-            Assert.Equal("yield data", ex.YieldValue);
+            Assert.Equal("yield data", ex.YieldedValue);
         }
 
         [Fact]
@@ -308,7 +308,7 @@ namespace Prim.Tests.Unit
             var runner = new ContinuationRunner();
             var testObject = new { Name = "Test", Value = 42 };
 
-            var result = runner.Run(() => testObject);
+            var result = runner.Run<object>(() => testObject);
 
             Assert.True(result.IsCompleted);
             var completed = (ContinuationResult<object>.Completed)result;

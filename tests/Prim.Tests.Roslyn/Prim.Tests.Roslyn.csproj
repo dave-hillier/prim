@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
@@ -22,10 +23,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Prim.Core\Prim.Core.csproj" />
     <ProjectReference Include="..\..\src\Prim.Runtime\Prim.Runtime.csproj" />
-    <!-- Reference as analyzer/source generator -->
-    <ProjectReference Include="..\..\src\Prim.Roslyn\Prim.Roslyn.csproj"
-                      OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Prim.Serialization\Prim.Serialization.csproj" />
+    <ProjectReference Include="..\..\src\Prim.Roslyn\Prim.Roslyn.csproj" />
   </ItemGroup>
 
 </Project>

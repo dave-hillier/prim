@@ -325,7 +325,7 @@ namespace Prim.Tests.Unit
             var ex = new SuspendException(5, "test value");
 
             Assert.Equal(5, ex.YieldPointId);
-            Assert.Equal("test value", ex.YieldValue);
+            Assert.Equal("test value", ex.YieldedValue);
         }
 
         [Fact]
@@ -361,9 +361,9 @@ namespace Prim.Tests.Unit
         [Fact]
         public void SlotKind_ValuesAreDistinct()
         {
-            Assert.NotEqual(SlotKind.Local, SlotKind.Parameter);
-            Assert.NotEqual(SlotKind.Parameter, SlotKind.EvaluationStack);
-            Assert.NotEqual(SlotKind.Local, SlotKind.EvaluationStack);
+            Assert.NotEqual(SlotKind.Local, SlotKind.Argument);
+            Assert.NotEqual(SlotKind.Argument, SlotKind.EvalStack);
+            Assert.NotEqual(SlotKind.Local, SlotKind.EvalStack);
         }
 
         #endregion

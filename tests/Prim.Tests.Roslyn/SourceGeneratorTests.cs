@@ -13,11 +13,11 @@ namespace Prim.Tests.Roslyn
         [Fact]
         public void GeneratedMethod_ExistsOnPartialClass()
         {
-            // The source generator should have created CountToTen_Continuable
+            // Test the continuable method
             var instance = new SampleContinuableClass();
 
             // Call the generated method
-            var result = instance.CountToTen_Continuable();
+            var result = instance.CountToTen();
 
             // Should return 55 (sum of 1 to 10)
             Assert.Equal(55, result);
@@ -28,7 +28,7 @@ namespace Prim.Tests.Roslyn
         {
             var instance = new SampleContinuableClass();
 
-            var result = instance.WhileCounter_Continuable();
+            var result = instance.WhileCounter();
 
             Assert.Equal(5, result);
         }
@@ -40,7 +40,7 @@ namespace Prim.Tests.Roslyn
             var runner = new ContinuationRunner();
 
             // First, run without requesting yield - should complete
-            var result1 = runner.Run(() => instance.CountToTen_Continuable());
+            var result1 = runner.Run(() => instance.CountToTen());
             Assert.True(result1.IsCompleted);
             Assert.Equal(55, ((ContinuationResult<int>.Completed)result1).Value);
         }
@@ -59,7 +59,7 @@ namespace Prim.Tests.Roslyn
             {
                 var context = ScriptContext.EnsureCurrent();
                 context.RequestYield();
-                return instance.CountToTen_Continuable();
+                return instance.CountToTen();
             });
 
             Assert.True(result.IsSuspended);

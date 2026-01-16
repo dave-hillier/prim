@@ -128,7 +128,7 @@ namespace Prim.Tests.Cecil
             var options = RewriterOptions.Default;
 
             Assert.True(options.PreserveDebugSymbols);
-            Assert.True(options.BackwardBranchesOnly);
+            Assert.True(options.IncludeBackwardBranches);
         }
 
         private static AssemblyDefinition CreateTestAssembly()
