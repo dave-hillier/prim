@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Prim.Analysis;
 using Mono.Cecil;
@@ -146,9 +147,35 @@ namespace Prim.Cecil
         public bool PreserveDebugSymbols { get; set; } = true;
 
         /// <summary>
-        /// Whether to add yield points at backward branches only.
-        /// If false, also adds yield points at method calls.
+        /// Whether to add yield points at backward branches (loops).
+        /// Default: true
         /// </summary>
-        public bool BackwardBranchesOnly { get; set; } = true;
+        public bool IncludeBackwardBranches { get; set; } = true;
+
+        /// <summary>
+        /// Whether to add yield points at external method calls.
+        /// Enables full Second Life-style behavior.
+        /// Default: false
+        /// </summary>
+        public bool IncludeExternalCalls { get; set; } = false;
+
+        /// <summary>
+        /// Assemblies to consider as "internal" when detecting external calls.
+        /// Calls to methods in these assemblies won't be yield points.
+        /// </summary>
+        public HashSet<string> InternalAssemblies { get; set; } = new HashSet<string>();
+
+        /// <summary>
+        /// Creates YieldPointOptions from these rewriter options.
+        /// </summary>
+        internal YieldPointOptions ToYieldPointOptions()
+        {
+            return new YieldPointOptions
+            {
+                IncludeBackwardBranches = IncludeBackwardBranches,
+                IncludeExternalCalls = IncludeExternalCalls,
+                InternalAssemblies = InternalAssemblies
+            };
+        }
     }
 }
