@@ -340,8 +340,8 @@ namespace Prim.Tests.Unit
         public void FrameSlot_DefaultRequiresSerialization()
         {
             var slot = new FrameSlot(0, "test", SlotKind.Local, typeof(int));
-            // Default should be false when not specified
-            Assert.False(slot.RequiresSerialization);
+            // Default is true (most slots need to be serialized)
+            Assert.True(slot.RequiresSerialization);
         }
 
         [Fact]
