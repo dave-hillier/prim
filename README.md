@@ -1,6 +1,6 @@
 # Prim
 
-A .NET continuation framework enabling suspend/resume of program execution with serializable state. Named after the primitive building blocks in Second Life - because it all starts with a Prim.
+A .NET continuation framework enabling suspend/resume of program execution with serializable state. Named after the primitive building blocks in Second Life.
 
 ## Overview
 
