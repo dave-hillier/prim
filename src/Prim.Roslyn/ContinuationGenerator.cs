@@ -396,15 +396,63 @@ namespace Prim.Roslyn
         {
             var typeName = GetFullTypeName(method);
             var methodName = method.Identifier.Text;
-            var parameters = string.Join(",", method.ParameterList.Parameters.Select(p => p.Type?.ToString() ?? ""));
+            var paramTypes = method.ParameterList.Parameters
+                .Select(p => p.Type?.ToString() ?? "")
+                .ToArray();
 
+            return StableHashFnv1a(typeName, methodName, paramTypes);
+        }
+
+        /// <summary>
+        /// Computes a stable FNV-1a hash for method identification.
+        /// This must match StableHash.GenerateMethodToken in Prim.Core.
+        /// </summary>
+        private static int StableHashFnv1a(string typeName, string methodName, string[] paramTypes)
+        {
             unchecked
             {
-                int hash = 17;
-                hash = hash * 31 + (typeName?.GetHashCode() ?? 0);
-                hash = hash * 31 + (methodName?.GetHashCode() ?? 0);
-                hash = hash * 31 + (parameters?.GetHashCode() ?? 0);
-                return hash;
+                const uint fnvPrime = 16777619;
+                const uint fnvOffsetBasis = 2166136261;
+
+                int ComputeStringHash(string value)
+                {
+                    if (value == null) return 0;
+                    uint hash = fnvOffsetBasis;
+                    foreach (char c in value)
+                    {
+                        hash ^= c;
+                        hash *= fnvPrime;
+                    }
+                    return (int)hash;
+                }
+
+                int Combine(params int[] hashes)
+                {
+                    int hash = 17;
+                    foreach (var h in hashes)
+                    {
+                        hash = ((hash << 5) + hash) ^ h;
+                    }
+                    return hash;
+                }
+
+                var typeHash = ComputeStringHash(typeName);
+                var methodHash = ComputeStringHash(methodName);
+
+                if (paramTypes == null || paramTypes.Length == 0)
+                {
+                    return Combine(typeHash, methodHash);
+                }
+
+                var hashes = new int[paramTypes.Length + 2];
+                hashes[0] = typeHash;
+                hashes[1] = methodHash;
+                for (int i = 0; i < paramTypes.Length; i++)
+                {
+                    hashes[i + 2] = ComputeStringHash(paramTypes[i]);
+                }
+
+                return Combine(hashes);
             }
         }
     }

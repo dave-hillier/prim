@@ -58,6 +58,44 @@ namespace Prim.Analysis
     }
 
     /// <summary>
+    /// Options for yield point identification.
+    /// </summary>
+    public sealed class YieldPointOptions
+    {
+        /// <summary>
+        /// Whether to add yield points at backward branches (loops).
+        /// Default: true
+        /// </summary>
+        public bool IncludeBackwardBranches { get; set; } = true;
+
+        /// <summary>
+        /// Whether to add yield points at external method calls.
+        /// Default: false
+        /// </summary>
+        public bool IncludeExternalCalls { get; set; } = false;
+
+        /// <summary>
+        /// List of assembly names to consider as "internal" (not external).
+        /// Calls to methods in these assemblies won't be yield points.
+        /// </summary>
+        public HashSet<string> InternalAssemblies { get; set; } = new HashSet<string>();
+
+        /// <summary>
+        /// Default options (backward branches only).
+        /// </summary>
+        public static YieldPointOptions Default => new YieldPointOptions();
+
+        /// <summary>
+        /// Options that include both backward branches and external calls.
+        /// </summary>
+        public static YieldPointOptions Full => new YieldPointOptions
+        {
+            IncludeBackwardBranches = true,
+            IncludeExternalCalls = true
+        };
+    }
+
+    /// <summary>
     /// Identifies yield points in IL code.
     /// </summary>
     public sealed class YieldPointIdentifier
@@ -65,17 +103,24 @@ namespace Prim.Analysis
         private readonly MethodDefinition _method;
         private readonly ControlFlowGraph _cfg;
         private readonly StackSimulator _stackSim;
+        private readonly YieldPointOptions _options;
 
         public YieldPointIdentifier(MethodDefinition method)
+            : this(method, YieldPointOptions.Default)
+        {
+        }
+
+        public YieldPointIdentifier(MethodDefinition method, YieldPointOptions options)
         {
             _method = method ?? throw new ArgumentNullException(nameof(method));
+            _options = options ?? YieldPointOptions.Default;
             _cfg = ControlFlowGraph.Build(method);
             _stackSim = new StackSimulator(method);
             _stackSim.Simulate();
         }
 
         /// <summary>
-        /// Finds all yield points in the method.
+        /// Finds all yield points in the method based on configured options.
         /// </summary>
         public List<ILYieldPoint> FindYieldPoints()
         {
@@ -83,41 +128,44 @@ namespace Prim.Analysis
             var nextId = 0;
 
             // Add yield points at loop back-edges (backward branches)
-            foreach (var (from, to) in _cfg.BackEdges)
+            if (_options.IncludeBackwardBranches)
             {
-                // The yield point is at the back-edge source (the branch instruction)
-                var lastInstruction = from.Instructions[from.Instructions.Count - 1];
-                yieldPoints.Add(new ILYieldPoint
+                foreach (var (from, to) in _cfg.BackEdges)
                 {
-                    Id = nextId++,
-                    Instruction = lastInstruction,
-                    Kind = ILYieldPointKind.BackwardBranch,
-                    StackState = _stackSim.GetStateAt(lastInstruction.Offset)
-                });
+                    // The yield point is at the back-edge source (the branch instruction)
+                    var lastInstruction = from.Instructions[from.Instructions.Count - 1];
+                    yieldPoints.Add(new ILYieldPoint
+                    {
+                        Id = nextId++,
+                        Instruction = lastInstruction,
+                        Kind = ILYieldPointKind.BackwardBranch,
+                        StackState = _stackSim.GetStateAt(lastInstruction.Offset)
+                    });
+                }
             }
 
-            // Optionally add yield points at external calls
-            // (Commented out for simplicity - can be enabled for full Second Life-style behavior)
-            /*
-            foreach (var instruction in _method.Body.Instructions)
+            // Add yield points at external calls (Second Life-style behavior)
+            if (_options.IncludeExternalCalls)
             {
-                if (instruction.OpCode.Code == Code.Call ||
-                    instruction.OpCode.Code == Code.Callvirt)
+                foreach (var instruction in _method.Body.Instructions)
                 {
-                    if (instruction.Operand is MethodReference called &&
-                        IsExternalCall(called))
+                    if (instruction.OpCode.Code == Code.Call ||
+                        instruction.OpCode.Code == Code.Callvirt)
                     {
-                        yieldPoints.Add(new ILYieldPoint
+                        if (instruction.Operand is MethodReference called &&
+                            IsExternalCall(called))
                         {
-                            Id = nextId++,
-                            Instruction = instruction,
-                            Kind = ILYieldPointKind.ExternalCall,
-                            StackState = _stackSim.GetStateAt(instruction.Offset)
-                        });
+                            yieldPoints.Add(new ILYieldPoint
+                            {
+                                Id = nextId++,
+                                Instruction = instruction,
+                                Kind = ILYieldPointKind.ExternalCall,
+                                StackState = _stackSim.GetStateAt(instruction.Offset)
+                            });
+                        }
                     }
                 }
             }
-            */
 
             return yieldPoints;
         }
@@ -135,9 +183,17 @@ namespace Prim.Analysis
         private bool IsExternalCall(MethodReference method)
         {
             // Consider a call external if it's not in the same assembly
+            // and not in the list of internal assemblies
             var calledAssembly = method.DeclaringType.Scope.Name;
             var thisAssembly = _method.Module.Assembly.Name.Name;
-            return calledAssembly != thisAssembly;
+
+            if (calledAssembly == thisAssembly)
+                return false;
+
+            if (_options.InternalAssemblies.Contains(calledAssembly))
+                return false;
+
+            return true;
         }
     }
 }

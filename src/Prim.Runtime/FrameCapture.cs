@@ -79,6 +79,7 @@ namespace Prim.Runtime
         /// <summary>
         /// Generates a stable method token from a method signature.
         /// Used during code generation to create consistent tokens.
+        /// Uses FNV-1a hash for deterministic results across processes.
         /// </summary>
         /// <param name="typeName">The full type name.</param>
         /// <param name="methodName">The method name.</param>
@@ -86,21 +87,7 @@ namespace Prim.Runtime
         /// <returns>A stable hash code for the method.</returns>
         public static int GenerateMethodToken(string typeName, string methodName, params string[] parameterTypes)
         {
-            // Simple stable hash combining type, method, and parameters
-            unchecked
-            {
-                int hash = 17;
-                hash = hash * 31 + (typeName?.GetHashCode() ?? 0);
-                hash = hash * 31 + (methodName?.GetHashCode() ?? 0);
-                if (parameterTypes != null)
-                {
-                    foreach (var param in parameterTypes)
-                    {
-                        hash = hash * 31 + (param?.GetHashCode() ?? 0);
-                    }
-                }
-                return hash;
-            }
+            return StableHash.GenerateMethodToken(typeName, methodName, parameterTypes);
         }
     }
 }
