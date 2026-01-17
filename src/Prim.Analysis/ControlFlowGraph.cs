@@ -49,6 +49,9 @@ namespace Prim.Analysis
             var instructions = body.Instructions;
             if (instructions.Count == 0) return;
 
+            // Compute instruction offsets (Cecil doesn't auto-compute for programmatic assemblies)
+            ComputeOffsets(instructions);
+
             // Step 1: Find block leaders (first instructions of blocks)
             var leaders = FindLeaders(body);
 
@@ -267,6 +270,20 @@ namespace Prim.Analysis
         private static bool IsReturn(Instruction instruction)
         {
             return instruction.OpCode.Code == Code.Ret;
+        }
+
+        /// <summary>
+        /// Computes instruction offsets for programmatically created assemblies.
+        /// Cecil doesn't auto-compute offsets until assembly is written/read.
+        /// </summary>
+        private static void ComputeOffsets(Mono.Collections.Generic.Collection<Instruction> instructions)
+        {
+            int offset = 0;
+            foreach (var instruction in instructions)
+            {
+                instruction.Offset = offset;
+                offset += instruction.GetSize();
+            }
         }
     }
 }

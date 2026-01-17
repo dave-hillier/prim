@@ -232,8 +232,11 @@ namespace Prim.Tests.Cecil
 
             var attrIl = attrCtor.Body.GetILProcessor();
             attrIl.Emit(OpCodes.Ldarg_0);
-            attrIl.Emit(OpCodes.Call, module.ImportReference(
-                typeof(Attribute).GetConstructor(Type.EmptyTypes)));
+            // Attribute's parameterless constructor is protected, not public
+            var attrBaseCtor = typeof(Attribute).GetConstructor(
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null, Type.EmptyTypes, null);
+            attrIl.Emit(OpCodes.Call, module.ImportReference(attrBaseCtor));
             attrIl.Emit(OpCodes.Ret);
 
             attrType.Methods.Add(attrCtor);

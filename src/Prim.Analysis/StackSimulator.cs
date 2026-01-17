@@ -61,6 +61,9 @@ namespace Prim.Analysis
             var body = _method.Body;
             var instructions = body.Instructions;
 
+            // Compute instruction offsets (Cecil doesn't auto-compute for programmatic assemblies)
+            ComputeOffsets(instructions);
+
             // Simple forward simulation
             var currentDepth = 0;
             var stack = new List<TypeReference>();
@@ -187,6 +190,20 @@ namespace Prim.Analysis
 
             // Default to object for simplicity
             return _method.Module.TypeSystem.Object;
+        }
+
+        /// <summary>
+        /// Computes instruction offsets for programmatically created assemblies.
+        /// Cecil doesn't auto-compute offsets until assembly is written/read.
+        /// </summary>
+        private static void ComputeOffsets(Mono.Collections.Generic.Collection<Instruction> instructions)
+        {
+            int offset = 0;
+            foreach (var instruction in instructions)
+            {
+                instruction.Offset = offset;
+                offset += instruction.GetSize();
+            }
         }
     }
 }

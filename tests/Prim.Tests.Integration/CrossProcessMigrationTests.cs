@@ -18,33 +18,24 @@ namespace Prim.Tests.Integration
         public void Json_SerializeAndDeserialize_PreservesState()
         {
             var serializer = new JsonContinuationSerializer();
-            var runner = new ContinuationRunner();
 
-            // Create a computation that will yield
-            var counter = 0;
-            var result = runner.Run(() =>
-            {
-                var context = ScriptContext.EnsureCurrent();
-                for (int i = 0; i < 10; i++)
-                {
-                    counter = i;
-                    context.RequestYield();
-                    context.HandleYieldPoint(0, i);
-                }
-                return counter;
-            });
-
-            Assert.True(result.IsSuspended);
-            var suspended = (ContinuationResult<int>.Suspended)result;
+            // Create state directly (IL transformation would normally do this during unwinding)
+            var methodToken = StableHash.GenerateMethodToken("Test", "Method", "System.Int32");
+            var slots = new object[] { 5, "test", 3.14 };
+            var frame = new HostFrameRecord(methodToken, 0, slots, null);
+            var state = new ContinuationState(frame, "yielded_value");
 
             // Serialize to JSON
-            var json = serializer.SerializeToString(suspended.State);
+            var json = serializer.SerializeToString(state);
             Assert.NotEmpty(json);
 
             // Deserialize
             var restored = serializer.DeserializeFromString(json);
             Assert.NotNull(restored);
             Assert.NotNull(restored.StackHead);
+            Assert.Equal(methodToken, restored.StackHead.MethodToken);
+            Assert.Equal(0, restored.StackHead.YieldPointId);
+            Assert.Equal("yielded_value", restored.YieldedValue);
         }
 
         [Fact]
@@ -79,43 +70,29 @@ namespace Prim.Tests.Integration
         public void NestedCalls_SerializeAndRestore()
         {
             var serializer = new JsonContinuationSerializer();
-            var runner = new ContinuationRunner();
 
-            // Create nested method calls
-            int OuterMethod()
-            {
-                var context = ScriptContext.EnsureCurrent();
-                var value = InnerMethod();
-                context.RequestYield();
-                context.HandleYieldPoint(0, "outer");
-                return value + 1;
-            }
+            // Create nested frame chain (simulating nested method calls)
+            // Inner frame (callee)
+            var innerToken = StableHash.GenerateMethodToken("Test", "InnerMethod", "System.Int32");
+            var innerFrame = new HostFrameRecord(innerToken, 1, new object[] { 10 }, null);
 
-            int InnerMethod()
-            {
-                var context = ScriptContext.EnsureCurrent();
-                context.RequestYield();
-                context.HandleYieldPoint(0, "inner");
-                return 10;
-            }
+            // Outer frame (caller) - points to inner as caller
+            var outerToken = StableHash.GenerateMethodToken("Test", "OuterMethod", "System.Int32");
+            var outerFrame = new HostFrameRecord(outerToken, 0, new object[] { 5 }, innerFrame);
 
-            // Note: This test demonstrates the concept, but full nested call
-            // restoration requires the IL rewriter to be applied to both methods.
-            // Here we test with a single-frame scenario.
-            var result = runner.Run(() =>
-            {
-                var context = ScriptContext.EnsureCurrent();
-                context.RequestYield();
-                context.HandleYieldPoint(0, "value");
-                return 42;
-            });
-
-            var suspended = (ContinuationResult<int>.Suspended)result;
-            var json = serializer.SerializeToString(suspended.State);
+            var state = new ContinuationState(outerFrame, "nested_value");
+            var json = serializer.SerializeToString(state);
 
             // Parse the JSON to verify structure
             Assert.Contains("MethodToken", json);
             Assert.Contains("YieldPointId", json);
+
+            // Verify deserialization preserves nesting
+            var restored = serializer.DeserializeFromString(json);
+            Assert.NotNull(restored.StackHead);
+            Assert.NotNull(restored.StackHead.Caller);
+            Assert.Equal(outerToken, restored.StackHead.MethodToken);
+            Assert.Equal(innerToken, restored.StackHead.Caller.MethodToken);
         }
 
         [Fact]
@@ -218,25 +195,18 @@ namespace Prim.Tests.Integration
         public void MultipleYieldPoints_PreservesCorrectId()
         {
             var serializer = new JsonContinuationSerializer();
-            var runner = new ContinuationRunner();
+            var methodToken = StableHash.GenerateMethodToken("Test", "Method", "System.Int32");
 
-            // Test yielding at different points
+            // Test different yield point IDs are preserved through serialization
             for (int yieldPointId = 0; yieldPointId < 3; yieldPointId++)
             {
-                var expectedId = yieldPointId;
-                var result = runner.Run(() =>
-                {
-                    var context = ScriptContext.EnsureCurrent();
-                    context.RequestYield();
-                    context.HandleYieldPoint(expectedId);
-                    return expectedId;
-                });
+                var frame = new HostFrameRecord(methodToken, yieldPointId, new object[] { yieldPointId }, null);
+                var state = new ContinuationState(frame, yieldPointId);
 
-                var suspended = (ContinuationResult<int>.Suspended)result;
-                var json = serializer.SerializeToString(suspended.State);
+                var json = serializer.SerializeToString(state);
                 var restored = serializer.DeserializeFromString(json);
 
-                Assert.Equal(expectedId, restored.StackHead.YieldPointId);
+                Assert.Equal(yieldPointId, restored.StackHead.YieldPointId);
             }
         }
 
