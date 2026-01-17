@@ -31,7 +31,6 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 
 ### Minor Items
 
-- **Instruction counting** - `ScriptScheduler._currentTick` is declared but unused; connect it to time-slice enforcement
 - **Direct resume** - `RunRestoringWithContext<T>()` throws NotImplementedException; would allow resuming without re-specifying the entry point
 
 ### Testing Work Needed
@@ -46,8 +45,9 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 - Runtime (ContinuationRunner, ScriptContext, ScriptScheduler)
 - Serialization (JSON and MessagePack with object graph tracking)
 - Analysis (CFG construction, stack simulation, yield point identification)
-- Cecil IL transformation (structure complete, needs real-world testing)
+- Cecil IL transformation with E2E tests
 - Roslyn source generator (works for simple cases)
+- Instruction counting for preemptive scheduling (budget-based yield enforcement)
 - Stable hashing for method tokens
 - Working samples (Generator, MigrationDemo)
-- Comprehensive test coverage (174 tests passing)
+- Comprehensive test coverage (193 tests passing)

@@ -166,6 +166,13 @@ namespace Prim.Cecil
         public HashSet<string> InternalAssemblies { get; set; } = new HashSet<string>();
 
         /// <summary>
+        /// Whether to inject instruction counting for preemptive scheduling.
+        /// When enabled, yield points decrement a budget and suspend when exhausted.
+        /// Default: true
+        /// </summary>
+        public bool EnableInstructionCounting { get; set; } = true;
+
+        /// <summary>
         /// Creates YieldPointOptions from these rewriter options.
         /// </summary>
         internal YieldPointOptions ToYieldPointOptions()

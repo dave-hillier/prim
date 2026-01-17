@@ -32,6 +32,18 @@ namespace Prim.Runtime
         public volatile int YieldRequested;
 
         /// <summary>
+        /// Instruction budget for preemptive scheduling.
+        /// Decremented at yield points; when zero or negative, forces a yield.
+        /// This provides bounded execution without requiring timer interrupts.
+        /// </summary>
+        public int InstructionBudget;
+
+        /// <summary>
+        /// Default budget assigned when none is specified.
+        /// </summary>
+        public const int DefaultBudget = 1000;
+
+        /// <summary>
         /// True when restoring from a saved state.
         /// Generated restore blocks check this at method entry.
         /// </summary>
@@ -54,6 +66,7 @@ namespace Prim.Runtime
         /// </summary>
         public ScriptContext()
         {
+            InstructionBudget = DefaultBudget;
         }
 
         /// <summary>
@@ -62,6 +75,7 @@ namespace Prim.Runtime
         public ScriptContext(ContinuationState state, object resumeValue)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
+            InstructionBudget = DefaultBudget;
             IsRestoring = true;
             FrameChain = state.StackHead;
             ResumeValue = resumeValue;
@@ -111,6 +125,50 @@ namespace Prim.Runtime
                 YieldRequested = 0;
                 throw new SuspendException(yieldPointId, value);
             }
+        }
+
+        /// <summary>
+        /// Called by generated code at yield points with instruction counting.
+        /// Decrements the budget by the specified cost; if budget exhausted or
+        /// yield requested, throws SuspendException.
+        /// </summary>
+        /// <param name="yieldPointId">The unique ID of this yield point.</param>
+        /// <param name="cost">The instruction cost since last yield point.</param>
+        public void HandleYieldPointWithBudget(int yieldPointId, int cost)
+        {
+            InstructionBudget -= cost;
+            if (YieldRequested != 0 || InstructionBudget <= 0)
+            {
+                YieldRequested = 0;
+                throw new SuspendException(yieldPointId);
+            }
+        }
+
+        /// <summary>
+        /// Called by generated code at yield points with instruction counting and a value.
+        /// Decrements the budget; if exhausted or yield requested, throws SuspendException.
+        /// </summary>
+        /// <param name="yieldPointId">The unique ID of this yield point.</param>
+        /// <param name="cost">The instruction cost since last yield point.</param>
+        /// <param name="value">The value to yield.</param>
+        public void HandleYieldPointWithBudget(int yieldPointId, int cost, object value)
+        {
+            InstructionBudget -= cost;
+            if (YieldRequested != 0 || InstructionBudget <= 0)
+            {
+                YieldRequested = 0;
+                throw new SuspendException(yieldPointId, value);
+            }
+        }
+
+        /// <summary>
+        /// Resets the instruction budget to the specified value.
+        /// Called by the scheduler before each time slice.
+        /// </summary>
+        /// <param name="budget">The new budget value.</param>
+        public void ResetBudget(int budget = DefaultBudget)
+        {
+            InstructionBudget = budget;
         }
 
         /// <summary>

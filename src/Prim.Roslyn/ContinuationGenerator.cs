@@ -342,8 +342,10 @@ namespace Prim.Roslyn
                     statement is ForEachStatementSyntax ||
                     statement is DoStatementSyntax)
                 {
-                    sb.AppendLine($"{indent}// Yield point {yieldPointIndex} (loop)");
-                    sb.AppendLine($"{indent}__context.HandleYieldPoint({yieldPointIndex});");
+                    // Estimate cost based on loop body size (1 per statement, minimum 1)
+                    var loopCost = EstimateStatementCost(statement);
+                    sb.AppendLine($"{indent}// Yield point {yieldPointIndex} (loop, cost={loopCost})");
+                    sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({yieldPointIndex}, {loopCost});");
                     yieldPointIndex++;
                 }
 
@@ -390,6 +392,19 @@ namespace Prim.Roslyn
             }
 
             return locals;
+        }
+
+        /// <summary>
+        /// Estimates the instruction cost of a statement for budget tracking.
+        /// </summary>
+        private static int EstimateStatementCost(StatementSyntax statement)
+        {
+            // Count child nodes as a rough proxy for instruction count
+            // This is approximate but provides reasonable fairness
+            var nodeCount = statement.DescendantNodes().Count();
+
+            // Minimum cost of 1, cap at reasonable maximum
+            return System.Math.Max(1, System.Math.Min(nodeCount, 100));
         }
 
         private static int GenerateMethodToken(MethodDeclarationSyntax method)

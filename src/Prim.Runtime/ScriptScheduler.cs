@@ -150,16 +150,16 @@ namespace Prim.Runtime
 
         private volatile bool _running;
         private volatile bool _stopRequested;
-        private int _ticksPerSlice = 100;
-        private int _currentTick;
+        private int _instructionBudgetPerSlice = ScriptContext.DefaultBudget;
 
         /// <summary>
-        /// Gets or sets the number of ticks (yield checks) per time slice.
+        /// Gets or sets the instruction budget per time slice.
+        /// Scripts yield when their budget is exhausted, ensuring fair scheduling.
         /// </summary>
-        public int TicksPerSlice
+        public int InstructionBudgetPerSlice
         {
-            get => _ticksPerSlice;
-            set => _ticksPerSlice = Math.Max(1, value);
+            get => _instructionBudgetPerSlice;
+            set => _instructionBudgetPerSlice = Math.Max(1, value);
         }
 
         /// <summary>
@@ -414,24 +414,30 @@ namespace Prim.Runtime
 
                 if (script.ContinuationState != null)
                 {
-                    // Resume from saved state
-                    result = _runner.Resume(
-                        script.ContinuationState,
-                        script.LastYieldedValue,
-                        script.EntryPoint);
+                    // Resume from saved state with fresh budget
+                    var context = new ScriptContext(script.ContinuationState, script.LastYieldedValue);
+                    context.ResetBudget(_instructionBudgetPerSlice);
+
+                    result = context.RunWith(() =>
+                        _runner.Resume(
+                            script.ContinuationState,
+                            script.LastYieldedValue,
+                            script.EntryPoint));
+
+                    // Track instructions consumed
+                    script.TickCount += _instructionBudgetPerSlice - context.InstructionBudget;
                 }
                 else
                 {
-                    // First run - set up yield trigger based on tick count
-                    _currentTick = 0;
+                    // First run with instruction budget
                     var context = new ScriptContext();
+                    context.ResetBudget(_instructionBudgetPerSlice);
 
                     result = context.RunWith(() =>
-                    {
-                        // Install tick counter
-                        ScriptContext.Current.RequestYield();
-                        return _runner.Run(script.EntryPoint);
-                    });
+                        _runner.Run(script.EntryPoint));
+
+                    // Track instructions consumed
+                    script.TickCount += _instructionBudgetPerSlice - context.InstructionBudget;
                 }
 
                 if (result.IsCompleted)

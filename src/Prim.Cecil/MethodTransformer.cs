@@ -24,6 +24,7 @@ namespace Prim.Cecil
         private TypeReference _scriptContextType;
         private MethodReference _ensureCurrentMethod;
         private MethodReference _handleYieldPointMethod;
+        private MethodReference _handleYieldPointWithBudgetMethod;
         private TypeReference _suspendExceptionType;
         private MethodReference _frameCapturePackSlots;
         private MethodReference _frameCaptureCaptureFrame;
@@ -98,6 +99,9 @@ namespace Prim.Cecil
                     _handleYieldPointMethod = _module.ImportReference(
                         scriptContextDef.Methods.FirstOrDefault(m =>
                             m.Name == "HandleYieldPoint" && m.Parameters.Count == 1));
+                    _handleYieldPointWithBudgetMethod = _module.ImportReference(
+                        scriptContextDef.Methods.FirstOrDefault(m =>
+                            m.Name == "HandleYieldPointWithBudget" && m.Parameters.Count == 2));
                     _isRestoringField = _module.ImportReference(
                         scriptContextDef.Fields.FirstOrDefault(f => f.Name == "IsRestoring"));
                     _frameChainField = _module.ImportReference(
@@ -182,21 +186,44 @@ namespace Prim.Cecil
             // Process in reverse order to maintain correct offsets
             var sortedYieldPoints = yieldPoints.OrderByDescending(yp => yp.Instruction.Offset).ToList();
 
+            // Calculate instruction costs between yield points
+            var costs = CalculateInstructionCosts(yieldPoints);
+
             foreach (var yp in sortedYieldPoints)
             {
                 var branchInstruction = yp.Instruction;
+                var cost = costs.TryGetValue(yp.Id, out var c) ? c : 1;
 
-                // Create yield check sequence:
-                // ldsfld ScriptContext.Current (or call EnsureCurrent)
-                // ldc.i4 <yieldPointId>
-                // call HandleYieldPoint
+                List<Instruction> checkSequence;
 
-                var checkSequence = new List<Instruction>
+                if (_options.EnableInstructionCounting && _handleYieldPointWithBudgetMethod != null)
                 {
-                    il.Create(OpCodes.Call, _ensureCurrentMethod),
-                    il.Create(OpCodes.Ldc_I4, yp.Id),
-                    il.Create(OpCodes.Callvirt, _handleYieldPointMethod)
-                };
+                    // Create yield check sequence with budget:
+                    // call ScriptContext.EnsureCurrent()
+                    // ldc.i4 <yieldPointId>
+                    // ldc.i4 <cost>
+                    // callvirt HandleYieldPointWithBudget(int, int)
+                    checkSequence = new List<Instruction>
+                    {
+                        il.Create(OpCodes.Call, _ensureCurrentMethod),
+                        il.Create(OpCodes.Ldc_I4, yp.Id),
+                        il.Create(OpCodes.Ldc_I4, cost),
+                        il.Create(OpCodes.Callvirt, _handleYieldPointWithBudgetMethod)
+                    };
+                }
+                else
+                {
+                    // Create simple yield check sequence:
+                    // call ScriptContext.EnsureCurrent()
+                    // ldc.i4 <yieldPointId>
+                    // callvirt HandleYieldPoint(int)
+                    checkSequence = new List<Instruction>
+                    {
+                        il.Create(OpCodes.Call, _ensureCurrentMethod),
+                        il.Create(OpCodes.Ldc_I4, yp.Id),
+                        il.Create(OpCodes.Callvirt, _handleYieldPointMethod)
+                    };
+                }
 
                 // Insert before the branch
                 foreach (var instr in checkSequence)
@@ -208,6 +235,43 @@ namespace Prim.Cecil
                 // to point to our first injected instruction
                 UpdateBranchTargets(il, branchInstruction, checkSequence[0]);
             }
+        }
+
+        /// <summary>
+        /// Calculates the instruction cost for each yield point.
+        /// Cost is the number of IL instructions between this yield point and the previous one.
+        /// </summary>
+        private Dictionary<int, int> CalculateInstructionCosts(List<ILYieldPoint> yieldPoints)
+        {
+            var costs = new Dictionary<int, int>();
+            var instructions = _method.Body.Instructions;
+
+            if (yieldPoints.Count == 0 || instructions.Count == 0)
+                return costs;
+
+            // Sort yield points by offset
+            var sortedYieldPoints = yieldPoints.OrderBy(yp => yp.Instruction.Offset).ToList();
+
+            // Cost for first yield point is from method start
+            int previousOffset = 0;
+            foreach (var yp in sortedYieldPoints)
+            {
+                // Count instructions between previous offset and this yield point
+                int count = 0;
+                foreach (var instr in instructions)
+                {
+                    if (instr.Offset >= previousOffset && instr.Offset < yp.Instruction.Offset)
+                    {
+                        count++;
+                    }
+                }
+
+                // Minimum cost of 1 to ensure progress
+                costs[yp.Id] = Math.Max(1, count);
+                previousOffset = yp.Instruction.Offset;
+            }
+
+            return costs;
         }
 
         private void WrapInTryCatch(ILProcessor il, List<ILYieldPoint> yieldPoints, int methodToken, VariableDefinition contextLocal)

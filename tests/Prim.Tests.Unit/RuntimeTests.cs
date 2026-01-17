@@ -334,5 +334,139 @@ namespace Prim.Tests.Unit
         }
 
         #endregion
+
+        #region Instruction Counting Tests
+
+        [Fact]
+        public void ScriptContext_DefaultBudget_IsSet()
+        {
+            var context = new ScriptContext();
+
+            Assert.Equal(ScriptContext.DefaultBudget, context.InstructionBudget);
+        }
+
+        [Fact]
+        public void ScriptContext_ResetBudget_SetsNewValue()
+        {
+            var context = new ScriptContext();
+
+            context.ResetBudget(500);
+
+            Assert.Equal(500, context.InstructionBudget);
+        }
+
+        [Fact]
+        public void ScriptContext_ResetBudget_DefaultValue()
+        {
+            var context = new ScriptContext();
+            context.InstructionBudget = 0;
+
+            context.ResetBudget();
+
+            Assert.Equal(ScriptContext.DefaultBudget, context.InstructionBudget);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_DecrementsBudget()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(100);
+
+            context.HandleYieldPointWithBudget(0, 10);
+
+            Assert.Equal(90, context.InstructionBudget);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_ThrowsWhenBudgetExhausted()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(5);
+
+            // First call succeeds (5 - 3 = 2 > 0)
+            context.HandleYieldPointWithBudget(0, 3);
+            Assert.Equal(2, context.InstructionBudget);
+
+            // Second call exhausts budget (2 - 5 = -3 <= 0) and throws
+            var ex = Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPointWithBudget(1, 5));
+
+            Assert.Equal(1, ex.YieldPointId);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_ThrowsOnExactZero()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(10);
+
+            // Cost equals budget exactly - should throw
+            var ex = Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPointWithBudget(0, 10));
+
+            Assert.Equal(0, ex.YieldPointId);
+            Assert.Equal(0, context.InstructionBudget);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_ThrowsWhenYieldRequested()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(1000);
+            context.RequestYield();
+
+            // Should throw even with plenty of budget because yield was requested
+            var ex = Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPointWithBudget(5, 1));
+
+            Assert.Equal(5, ex.YieldPointId);
+            Assert.Equal(999, context.InstructionBudget); // Budget still decremented
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_WithValue_ThrowsWhenExhausted()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(5);
+
+            var ex = Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPointWithBudget(2, 10, "my value"));
+
+            Assert.Equal(2, ex.YieldPointId);
+            Assert.Equal("my value", ex.YieldedValue);
+        }
+
+        [Fact]
+        public void ScriptContext_HandleYieldPointWithBudget_MultipleCalls()
+        {
+            var context = new ScriptContext();
+            context.ResetBudget(100);
+
+            // Simulate multiple yield points in a loop
+            for (int i = 0; i < 9; i++)
+            {
+                context.HandleYieldPointWithBudget(0, 10);
+            }
+
+            Assert.Equal(10, context.InstructionBudget);
+
+            // 10th iteration exhausts budget
+            Assert.Throws<SuspendException>(() =>
+                context.HandleYieldPointWithBudget(0, 10));
+        }
+
+        [Fact]
+        public void ScriptContext_RestorationConstructor_SetsBudget()
+        {
+            var frame = new HostFrameRecord(100, 0, new object[0], null);
+            var state = new ContinuationState(frame);
+
+            var context = new ScriptContext(state, null);
+
+            Assert.Equal(ScriptContext.DefaultBudget, context.InstructionBudget);
+        }
+
+        #endregion
     }
 }
+
