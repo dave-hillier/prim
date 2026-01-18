@@ -2,7 +2,7 @@
 
 ## Current State
 
-The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (238 total).
+The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (246 total).
 
 ## What's Left
 
@@ -10,16 +10,10 @@ The framework is architecturally complete. Runtime, serialization, analysis, and
 
 The generator works for simple cases but is marked as a "simplified implementation". To handle real-world code:
 
-- Loop transformation (while, for, foreach) - partially done
-- Try-catch-finally blocks
 - Nested method calls with yield points
 - Complex control flow (switch expressions, pattern matching)
 
 Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs)
-
-### Testing Work Needed
-
-- Tests for the Roslyn generator with complex control flow
 
 ## What's Done
 
@@ -28,11 +22,14 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 - Serialization (JSON and MessagePack with object graph tracking)
 - Analysis (CFG construction, stack simulation, yield point identification)
 - Cecil IL transformation with E2E tests
-- Roslyn source generator (works for simple cases)
+- Roslyn source generator with:
+  - Loop transformation (while, for, foreach, do-while)
+  - Try-catch-finally blocks (including nested and finally with yield points)
+  - Proper SuspendException filtering in catch clauses
 - Instruction counting for preemptive scheduling (budget-based yield enforcement)
 - Security validation for deserialized state (method tokens, yield points, slot types, type whitelist)
 - Direct resume without entry point (EntryPointRegistry maps method tokens to delegates)
 - Performance benchmarks (transform overhead, suspension/resume, serialization, validation)
 - Stable hashing for method tokens
 - Working samples (Generator, MigrationDemo)
-- Comprehensive test coverage (238 tests passing)
+- Comprehensive test coverage (246 tests passing)

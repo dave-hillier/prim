@@ -218,6 +218,107 @@ namespace Prim.Tests.Roslyn
 
         #endregion
 
+        #region Try-Catch-Finally Tests
+
+        [Fact]
+        public void TryCatch_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Call the generated try-catch method
+            var result = instance.TryCatchMethod();
+
+            // Should return 10 (sum of 0 to 4)
+            Assert.Equal(10, result);
+        }
+
+        [Fact]
+        public void TryFinally_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Call the generated try-finally method
+            var result = instance.TryFinallyMethod();
+
+            // Should return 11 (sum of 0 to 4 = 10, plus cleanup = 1)
+            Assert.Equal(11, result);
+        }
+
+        [Fact]
+        public void TryCatchFinally_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Call the generated try-catch-finally method
+            var result = instance.TryCatchFinallyMethod();
+
+            // Should return 11 (sum of 0 to 4 = 10, plus cleanup = 1)
+            Assert.Equal(11, result);
+        }
+
+        [Fact]
+        public void NestedTry_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Call the generated nested try method
+            var result = instance.NestedTryMethod();
+
+            // result = 3 (sum of 0,1,2), outer = 101 (1 + 100), inner = 12 (2 + 10)
+            // Total = 3 + 101 + 12 = 116
+            Assert.Equal(116, result);
+        }
+
+        [Fact]
+        public void LoopInFinally_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Call the generated method with loop in finally
+            var result = instance.LoopInFinallyMethod();
+
+            // result starts at 10, then adds 0+1+2 in finally = 13
+            Assert.Equal(13, result);
+        }
+
+        [Fact]
+        public void TryCatch_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            // Run without yielding - should complete
+            var result = runner.Run(() => instance.TryCatchMethod());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(10, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        [Fact]
+        public void TryFinally_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            // Run without yielding - should complete
+            var result = runner.Run(() => instance.TryFinallyMethod());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(11, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        [Fact]
+        public void TryCatchFinally_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            // Run without yielding - should complete
+            var result = runner.Run(() => instance.TryCatchFinallyMethod());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(11, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        #endregion
+
         #region FrameCapture Tests
 
         [Fact]

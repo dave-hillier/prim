@@ -249,9 +249,19 @@ namespace Prim.Roslyn
             bool isVoid,
             string returnType)
         {
+            // Get try block information
+            var analyzer = new YieldPointAnalyzer();
+            var (_, tryBlocks) = analyzer.FindYieldPointsAndTryBlocks(method);
+
             sb.AppendLine($"{indent}var __context = ScriptContext.EnsureCurrent();");
             sb.AppendLine($"{indent}const int __methodToken = {methodToken};");
             sb.AppendLine($"{indent}int __state = 0;");
+
+            // Track which try block we're resuming into (for try-catch-finally support)
+            if (tryBlocks.Count > 0)
+            {
+                sb.AppendLine($"{indent}int __tryBlockState = -1; // Which try block to resume into (-1 = none)");
+            }
             sb.AppendLine();
 
             // Declare all locals at outer scope
@@ -276,6 +286,15 @@ namespace Prim.Roslyn
                 var local = locals[i];
                 sb.AppendLine($"{indent}    {local.name} = FrameCapture.GetSlot<{local.type}>(__frame.Slots, {i});");
             }
+
+            // Restore try block state if present (stored in an extra slot)
+            if (tryBlocks.Count > 0 && locals.Count > 0)
+            {
+                sb.AppendLine();
+                sb.AppendLine($"{indent}    // Restore try block state if available");
+                sb.AppendLine($"{indent}    if (__frame.Slots.Length > {locals.Count})");
+                sb.AppendLine($"{indent}        __tryBlockState = FrameCapture.GetSlot<int>(__frame.Slots, {locals.Count});");
+            }
             sb.AppendLine();
 
             sb.AppendLine($"{indent}    if (__context.FrameChain == null)");
@@ -290,12 +309,11 @@ namespace Prim.Roslyn
             // For now, generate a simplified version that just calls the original method
             // A full implementation would transform the body into a state machine
             sb.AppendLine($"{indent}    // State machine implementation");
-            sb.AppendLine($"{indent}    // Note: This simplified version wraps the original logic.");
-            sb.AppendLine($"{indent}    // A full implementation would transform loops into state transitions.");
+            sb.AppendLine($"{indent}    // Supports try-catch-finally blocks with yield points.");
             sb.AppendLine();
 
             // Generate simplified body with yield checks
-            GenerateSimplifiedBody(sb, method, yieldPoints, indent + "    ");
+            GenerateSimplifiedBody(sb, method, yieldPoints, tryBlocks, indent + "    ");
 
             sb.AppendLine($"{indent}}}");
 
@@ -306,6 +324,14 @@ namespace Prim.Roslyn
             if (locals.Count > 0)
             {
                 sb.Append(string.Join(", ", locals.Select(l => l.name)));
+                if (tryBlocks.Count > 0)
+                {
+                    sb.Append(", __tryBlockState");
+                }
+            }
+            else if (tryBlocks.Count > 0)
+            {
+                sb.Append("__tryBlockState");
             }
             sb.AppendLine(");");
             sb.AppendLine($"{indent}    var __record = FrameCapture.CaptureFrame(__methodToken, __ex.YieldPointId, __slots, __ex.FrameChain);");
@@ -318,6 +344,7 @@ namespace Prim.Roslyn
             StringBuilder sb,
             MethodDeclarationSyntax method,
             System.Collections.Generic.List<YieldPointInfo> yieldPoints,
+            System.Collections.Generic.List<TryBlockInfo> tryBlocks,
             string indent)
         {
             var body = method.Body;
@@ -332,26 +359,62 @@ namespace Prim.Roslyn
                 return;
             }
 
-            int yieldPointIndex = 0;
-
-            foreach (var statement in body.Statements)
+            var context = new BodyGenerationContext
             {
-                // Check if this is a loop statement - add yield point before
-                if (statement is WhileStatementSyntax ||
-                    statement is ForStatementSyntax ||
-                    statement is ForEachStatementSyntax ||
-                    statement is DoStatementSyntax)
-                {
-                    // Estimate cost based on loop body size (1 per statement, minimum 1)
-                    var loopCost = EstimateStatementCost(statement);
-                    sb.AppendLine($"{indent}// Yield point {yieldPointIndex} (loop, cost={loopCost})");
-                    sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({yieldPointIndex}, {loopCost});");
-                    yieldPointIndex++;
-                }
+                YieldPointIndex = 0,
+                TryBlockIndex = 0,
+                TryBlocks = tryBlocks
+            };
 
-                // Output the statement, handling local declarations specially
-                if (statement is LocalDeclarationStatementSyntax localDecl)
-                {
+            GenerateStatements(sb, body.Statements, context, indent);
+        }
+
+        private class BodyGenerationContext
+        {
+            public int YieldPointIndex { get; set; }
+            public int TryBlockIndex { get; set; }
+            public System.Collections.Generic.List<TryBlockInfo> TryBlocks { get; set; }
+        }
+
+        private static void GenerateStatements(
+            StringBuilder sb,
+            SyntaxList<StatementSyntax> statements,
+            BodyGenerationContext context,
+            string indent)
+        {
+            foreach (var statement in statements)
+            {
+                GenerateStatement(sb, statement, context, indent);
+            }
+        }
+
+        private static void GenerateStatement(
+            StringBuilder sb,
+            StatementSyntax statement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            // Check if this is a loop statement - add yield point before
+            if (statement is WhileStatementSyntax ||
+                statement is ForStatementSyntax ||
+                statement is ForEachStatementSyntax ||
+                statement is DoStatementSyntax)
+            {
+                // Estimate cost based on loop body size (1 per statement, minimum 1)
+                var loopCost = EstimateStatementCost(statement);
+                sb.AppendLine($"{indent}// Yield point {context.YieldPointIndex} (loop, cost={loopCost})");
+                sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({context.YieldPointIndex}, {loopCost});");
+                context.YieldPointIndex++;
+            }
+
+            // Handle different statement types
+            switch (statement)
+            {
+                case TryStatementSyntax tryStatement:
+                    GenerateTryStatement(sb, tryStatement, context, indent);
+                    break;
+
+                case LocalDeclarationStatementSyntax localDecl:
                     // Don't redeclare - just assign
                     foreach (var variable in localDecl.Declaration.Variables)
                     {
@@ -360,12 +423,237 @@ namespace Prim.Roslyn
                             sb.AppendLine($"{indent}{variable.Identifier.Text} = {variable.Initializer.Value};");
                         }
                     }
+                    break;
+
+                case BlockSyntax block:
+                    sb.AppendLine($"{indent}{{");
+                    GenerateStatements(sb, block.Statements, context, indent + "    ");
+                    sb.AppendLine($"{indent}}}");
+                    break;
+
+                case IfStatementSyntax ifStatement:
+                    GenerateIfStatement(sb, ifStatement, context, indent);
+                    break;
+
+                case WhileStatementSyntax whileStatement:
+                    GenerateWhileStatement(sb, whileStatement, context, indent);
+                    break;
+
+                case ForStatementSyntax forStatement:
+                    GenerateForStatement(sb, forStatement, context, indent);
+                    break;
+
+                case ForEachStatementSyntax foreachStatement:
+                    GenerateForEachStatement(sb, foreachStatement, context, indent);
+                    break;
+
+                case DoStatementSyntax doStatement:
+                    GenerateDoStatement(sb, doStatement, context, indent);
+                    break;
+
+                default:
+                    // Output the statement as-is
+                    sb.AppendLine($"{indent}{statement.ToFullString().TrimEnd()}");
+                    break;
+            }
+        }
+
+        private static void GenerateTryStatement(
+            StringBuilder sb,
+            TryStatementSyntax tryStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            var tryBlockId = context.TryBlockIndex++;
+            var hasFinally = tryStatement.Finally != null;
+            var hasCatch = tryStatement.Catches.Count > 0;
+
+            sb.AppendLine();
+            sb.AppendLine($"{indent}// Try block {tryBlockId} (hasFinally={hasFinally}, hasCatch={hasCatch})");
+
+            // Track which try block we're in for state capture
+            if (context.TryBlocks.Count > 0)
+            {
+                sb.AppendLine($"{indent}__tryBlockState = {tryBlockId};");
+            }
+
+            // Generate the try block
+            sb.AppendLine($"{indent}try");
+            sb.AppendLine($"{indent}{{");
+            GenerateStatements(sb, tryStatement.Block.Statements, context, indent + "    ");
+            sb.AppendLine($"{indent}}}");
+
+            // Generate catch clauses
+            foreach (var catchClause in tryStatement.Catches)
+            {
+                GenerateCatchClause(sb, catchClause, context, indent);
+            }
+
+            // Generate finally block
+            if (tryStatement.Finally != null)
+            {
+                sb.AppendLine($"{indent}finally");
+                sb.AppendLine($"{indent}{{");
+
+                // Check if we're suspending - if so, the SuspendException has already
+                // propagated through and we just need to let the finally run naturally
+                sb.AppendLine($"{indent}    // Finally block executes on both normal completion and suspension");
+                GenerateStatements(sb, tryStatement.Finally.Block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+
+            // Reset try block tracking after exiting
+            if (context.TryBlocks.Count > 0)
+            {
+                sb.AppendLine($"{indent}__tryBlockState = -1;");
+            }
+
+            sb.AppendLine();
+        }
+
+        private static void GenerateCatchClause(
+            StringBuilder sb,
+            CatchClauseSyntax catchClause,
+            BodyGenerationContext context,
+            string indent)
+        {
+            var declaration = catchClause.Declaration;
+            if (declaration != null)
+            {
+                var exType = declaration.Type.ToString();
+                var varName = declaration.Identifier.Text;
+
+                // Don't catch SuspendException - let it propagate
+                sb.AppendLine($"{indent}catch ({exType} {varName}) when (!({varName} is SuspendException))");
+            }
+            else
+            {
+                // Bare catch clause - need a filter to avoid catching SuspendException
+                sb.AppendLine($"{indent}catch (Exception __catchEx) when (!(__catchEx is SuspendException))");
+            }
+
+            sb.AppendLine($"{indent}{{");
+            GenerateStatements(sb, catchClause.Block.Statements, context, indent + "    ");
+            sb.AppendLine($"{indent}}}");
+        }
+
+        private static void GenerateIfStatement(
+            StringBuilder sb,
+            IfStatementSyntax ifStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            sb.AppendLine($"{indent}if ({ifStatement.Condition})");
+            if (ifStatement.Statement is BlockSyntax block)
+            {
+                sb.AppendLine($"{indent}{{");
+                GenerateStatements(sb, block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+            else
+            {
+                GenerateStatement(sb, ifStatement.Statement, context, indent + "    ");
+            }
+
+            if (ifStatement.Else != null)
+            {
+                sb.AppendLine($"{indent}else");
+                if (ifStatement.Else.Statement is BlockSyntax elseBlock)
+                {
+                    sb.AppendLine($"{indent}{{");
+                    GenerateStatements(sb, elseBlock.Statements, context, indent + "    ");
+                    sb.AppendLine($"{indent}}}");
                 }
                 else
                 {
-                    sb.AppendLine($"{indent}{statement.ToFullString().TrimEnd()}");
+                    GenerateStatement(sb, ifStatement.Else.Statement, context, indent + "    ");
                 }
             }
+        }
+
+        private static void GenerateWhileStatement(
+            StringBuilder sb,
+            WhileStatementSyntax whileStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            sb.AppendLine($"{indent}while ({whileStatement.Condition})");
+            if (whileStatement.Statement is BlockSyntax block)
+            {
+                sb.AppendLine($"{indent}{{");
+                GenerateStatements(sb, block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+            else
+            {
+                GenerateStatement(sb, whileStatement.Statement, context, indent + "    ");
+            }
+        }
+
+        private static void GenerateForStatement(
+            StringBuilder sb,
+            ForStatementSyntax forStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            var decl = forStatement.Declaration?.ToString() ?? "";
+            var initializers = string.Join(", ", forStatement.Initializers.Select(i => i.ToString()));
+            var condition = forStatement.Condition?.ToString() ?? "";
+            var incrementors = string.Join(", ", forStatement.Incrementors.Select(i => i.ToString()));
+
+            var initPart = !string.IsNullOrEmpty(decl) ? decl : initializers;
+            sb.AppendLine($"{indent}for ({initPart}; {condition}; {incrementors})");
+
+            if (forStatement.Statement is BlockSyntax block)
+            {
+                sb.AppendLine($"{indent}{{");
+                GenerateStatements(sb, block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+            else
+            {
+                GenerateStatement(sb, forStatement.Statement, context, indent + "    ");
+            }
+        }
+
+        private static void GenerateForEachStatement(
+            StringBuilder sb,
+            ForEachStatementSyntax foreachStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            sb.AppendLine($"{indent}foreach ({foreachStatement.Type} {foreachStatement.Identifier} in {foreachStatement.Expression})");
+
+            if (foreachStatement.Statement is BlockSyntax block)
+            {
+                sb.AppendLine($"{indent}{{");
+                GenerateStatements(sb, block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+            else
+            {
+                GenerateStatement(sb, foreachStatement.Statement, context, indent + "    ");
+            }
+        }
+
+        private static void GenerateDoStatement(
+            StringBuilder sb,
+            DoStatementSyntax doStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            sb.AppendLine($"{indent}do");
+            if (doStatement.Statement is BlockSyntax block)
+            {
+                sb.AppendLine($"{indent}{{");
+                GenerateStatements(sb, block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+            }
+            else
+            {
+                GenerateStatement(sb, doStatement.Statement, context, indent + "    ");
+            }
+            sb.AppendLine($"{indent}while ({doStatement.Condition});");
         }
 
         private static System.Collections.Generic.List<(string name, string type)> GetLocalVariables(MethodDeclarationSyntax method)
