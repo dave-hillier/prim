@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -13,6 +14,7 @@ namespace Prim.Roslyn
         public int Id { get; set; }
         public Location Location { get; set; }
         public YieldPointKind Kind { get; set; }
+        public string Description { get; set; }
     }
 
     /// <summary>
@@ -33,7 +35,17 @@ namespace Prim.Roslyn
         /// <summary>
         /// Explicit yield call.
         /// </summary>
-        ExplicitYield
+        ExplicitYield,
+
+        /// <summary>
+        /// Call to another continuable method.
+        /// </summary>
+        ContinuableCall,
+
+        /// <summary>
+        /// Await expression (for async methods that need continuation support).
+        /// </summary>
+        AwaitExpression
     }
 
     /// <summary>
@@ -134,13 +146,60 @@ namespace Prim.Roslyn
                     {
                         Id = _nextId++,
                         Location = node.GetLocation(),
-                        Kind = YieldPointKind.ExplicitYield
+                        Kind = YieldPointKind.ExplicitYield,
+                        Description = $"Explicit yield: {methodName}"
+                    });
+                }
+                // Check if this might be a call to another continuable method
+                else if (methodName.EndsWith("_Continuable"))
+                {
+                    _yieldPoints.Add(new YieldPointInfo
+                    {
+                        Id = _nextId++,
+                        Location = node.GetLocation(),
+                        Kind = YieldPointKind.ContinuableCall,
+                        Description = $"Continuable call: {methodName}"
                     });
                 }
                 base.VisitInvocationExpression(node);
             }
 
+            public override void VisitAwaitExpression(AwaitExpressionSyntax node)
+            {
+                // Await expressions are potential yield points in async-continuable methods
+                _yieldPoints.Add(new YieldPointInfo
+                {
+                    Id = _nextId++,
+                    Location = node.GetLocation(),
+                    Kind = YieldPointKind.AwaitExpression,
+                    Description = $"Await: {node.Expression}"
+                });
+                base.VisitAwaitExpression(node);
+            }
+
+            public override void VisitSwitchStatement(SwitchStatementSyntax node)
+            {
+                // Track switch statements for completeness (they may contain loops)
+                base.VisitSwitchStatement(node);
+            }
+
+            public override void VisitSwitchExpression(SwitchExpressionSyntax node)
+            {
+                // Track switch expressions for completeness
+                base.VisitSwitchExpression(node);
+            }
+
             private static string GetMethodName(InvocationExpressionSyntax invocation)
+            {
+                return invocation.Expression switch
+                {
+                    IdentifierNameSyntax id => id.Identifier.Text,
+                    MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+                    _ => ""
+                };
+            }
+
+            private static string GetFullMethodName(InvocationExpressionSyntax invocation)
             {
                 return invocation.Expression switch
                 {
@@ -149,6 +208,36 @@ namespace Prim.Roslyn
                     _ => ""
                 };
             }
+        }
+
+        /// <summary>
+        /// Checks if a method body contains any yield points.
+        /// </summary>
+        public bool HasYieldPoints(MethodDeclarationSyntax method)
+        {
+            return FindYieldPoints(method).Count > 0;
+        }
+
+        /// <summary>
+        /// Gets a summary of yield points for documentation.
+        /// </summary>
+        public string GetYieldPointSummary(MethodDeclarationSyntax method)
+        {
+            var yieldPoints = FindYieldPoints(method);
+            if (yieldPoints.Count == 0) return "No yield points";
+
+            var loopCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.LoopBackEdge);
+            var explicitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ExplicitYield);
+            var callCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ContinuableCall);
+            var awaitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.AwaitExpression);
+
+            var parts = new List<string>();
+            if (loopCount > 0) parts.Add($"{loopCount} loop(s)");
+            if (explicitCount > 0) parts.Add($"{explicitCount} explicit yield(s)");
+            if (callCount > 0) parts.Add($"{callCount} continuable call(s)");
+            if (awaitCount > 0) parts.Add($"{awaitCount} await(s)");
+
+            return string.Join(", ", parts);
         }
     }
 }
