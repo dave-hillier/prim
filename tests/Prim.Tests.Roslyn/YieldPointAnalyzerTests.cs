@@ -364,11 +364,13 @@ namespace Prim.Tests.Roslyn
             var info = new YieldPointInfo
             {
                 Id = 42,
-                Kind = YieldPointKind.LoopBackEdge
+                Kind = YieldPointKind.LoopBackEdge,
+                Description = "Test description"
             };
 
             Assert.Equal(42, info.Id);
             Assert.Equal(YieldPointKind.LoopBackEdge, info.Kind);
+            Assert.Equal("Test description", info.Description);
         }
 
         [Fact]
@@ -377,6 +379,155 @@ namespace Prim.Tests.Roslyn
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.LoopBackEdge));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.MethodExit));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.ExplicitYield));
+            Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.ContinuableCall));
+            Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.AwaitExpression));
+        }
+
+        #endregion
+
+        #region Continuable Call Tests
+
+        [Fact]
+        public void FindYieldPoints_ContinuableMethodCall_ReturnsContinuableCallYieldPoint()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    SomeMethod_Continuable();
+                }");
+
+            var yieldPoints = _analyzer.FindYieldPoints(method);
+
+            Assert.Single(yieldPoints);
+            Assert.Equal(YieldPointKind.ContinuableCall, yieldPoints[0].Kind);
+            Assert.Contains("Continuable call", yieldPoints[0].Description);
+        }
+
+        [Fact]
+        public void FindYieldPoints_QualifiedContinuableCall_ReturnsContinuableCallYieldPoint()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    instance.DoWork_Continuable();
+                }");
+
+            var yieldPoints = _analyzer.FindYieldPoints(method);
+
+            Assert.Single(yieldPoints);
+            Assert.Equal(YieldPointKind.ContinuableCall, yieldPoints[0].Kind);
+        }
+
+        #endregion
+
+        #region Await Expression Tests
+
+        [Fact]
+        public void FindYieldPoints_AwaitExpression_ReturnsAwaitYieldPoint()
+        {
+            var method = ParseMethod(@"
+                public async void TestMethod()
+                {
+                    await Task.Delay(100);
+                }");
+
+            var yieldPoints = _analyzer.FindYieldPoints(method);
+
+            Assert.Single(yieldPoints);
+            Assert.Equal(YieldPointKind.AwaitExpression, yieldPoints[0].Kind);
+            Assert.Contains("Await", yieldPoints[0].Description);
+        }
+
+        [Fact]
+        public void FindYieldPoints_MultipleAwaits_ReturnsAllAwaitYieldPoints()
+        {
+            var method = ParseMethod(@"
+                public async void TestMethod()
+                {
+                    await Task.Delay(100);
+                    await Task.Delay(200);
+                    await Task.Delay(300);
+                }");
+
+            var yieldPoints = _analyzer.FindYieldPoints(method);
+
+            Assert.Equal(3, yieldPoints.Count);
+            Assert.All(yieldPoints, yp => Assert.Equal(YieldPointKind.AwaitExpression, yp.Kind));
+        }
+
+        #endregion
+
+        #region Helper Method Tests
+
+        [Fact]
+        public void HasYieldPoints_MethodWithLoop_ReturnsTrue()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    while (true) { }
+                }");
+
+            Assert.True(_analyzer.HasYieldPoints(method));
+        }
+
+        [Fact]
+        public void HasYieldPoints_MethodWithoutLoop_ReturnsFalse()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    var x = 1;
+                }");
+
+            Assert.False(_analyzer.HasYieldPoints(method));
+        }
+
+        [Fact]
+        public void GetYieldPointSummary_NoYieldPoints_ReturnsNoYieldPoints()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    var x = 1;
+                }");
+
+            var summary = _analyzer.GetYieldPointSummary(method);
+
+            Assert.Equal("No yield points", summary);
+        }
+
+        [Fact]
+        public void GetYieldPointSummary_WithLoops_ReturnsLoopCount()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    for (int i = 0; i < 10; i++) { }
+                    while (true) { }
+                }");
+
+            var summary = _analyzer.GetYieldPointSummary(method);
+
+            Assert.Contains("2 loop(s)", summary);
+        }
+
+        [Fact]
+        public void GetYieldPointSummary_WithMixedYieldPoints_ReturnsAll()
+        {
+            var method = ParseMethod(@"
+                public void TestMethod()
+                {
+                    for (int i = 0; i < 10; i++)
+                    {
+                        Yield();
+                    }
+                }");
+
+            var summary = _analyzer.GetYieldPointSummary(method);
+
+            Assert.Contains("1 loop(s)", summary);
+            Assert.Contains("1 explicit yield(s)", summary);
         }
 
         #endregion
