@@ -319,6 +319,124 @@ namespace Prim.Tests.Roslyn
 
         #endregion
 
+        #region Nested Method Call Tests
+
+        [Fact]
+        public void InnerSum_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Direct call to continuable inner method
+            var result = instance.InnerSum_Continuable(5);
+
+            // Should return 15 (1+2+3+4+5)
+            Assert.Equal(15, result);
+        }
+
+        [Fact]
+        public void OuterCallsInner_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Outer method calls inner continuable method
+            var result = instance.OuterCallsInner_Continuable();
+
+            // InnerSum(5) = 15, plus 100 = 115
+            Assert.Equal(115, result);
+        }
+
+        [Fact]
+        public void MultipleNestedCalls_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            var result = instance.MultipleNestedCalls_Continuable();
+
+            // InnerSum(3) = 6, InnerSum(4) = 10, total = 16
+            Assert.Equal(16, result);
+        }
+
+        [Fact]
+        public void NestedCallInLoop_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            var result = instance.NestedCallInLoop_Continuable();
+
+            // InnerSum(1)=1 + InnerSum(2)=3 + InnerSum(3)=6 = 10
+            Assert.Equal(10, result);
+        }
+
+        [Fact]
+        public void NestedCallInExpression_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            var result = instance.NestedCallInExpression_Continuable();
+
+            // InnerSum(5)=15 * 2 = 30
+            Assert.Equal(30, result);
+        }
+
+        [Fact]
+        public void NestedCallInTry_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            var result = instance.NestedCallInTry_Continuable();
+
+            // InnerSum(4)=10 + 5 (from finally) = 15
+            Assert.Equal(15, result);
+        }
+
+        [Fact]
+        public void DeepNesting_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            var result = instance.DeepNesting_Continuable();
+
+            // DeepNesting calls MiddleMethod(3)
+            // MiddleMethod calls InnerSum(3) = 6, returns 6 * 10 = 60
+            Assert.Equal(60, result);
+        }
+
+        [Fact]
+        public void NestedCall_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            // Run without yielding - should complete
+            var result = runner.Run(() => instance.OuterCallsInner_Continuable());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(115, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        [Fact]
+        public void MultipleNestedCalls_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            var result = runner.Run(() => instance.MultipleNestedCalls_Continuable());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(16, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        [Fact]
+        public void DeepNesting_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            var result = runner.Run(() => instance.DeepNesting_Continuable());
+            Assert.True(result.IsCompleted);
+            Assert.Equal(60, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        #endregion
+
         #region FrameCapture Tests
 
         [Fact]

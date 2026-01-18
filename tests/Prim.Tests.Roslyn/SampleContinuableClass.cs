@@ -156,5 +156,112 @@ namespace Prim.Tests.Roslyn
             }
             return result;
         }
+
+        #region Nested Method Call Tests
+
+        /// <summary>
+        /// A simple inner method that computes a sum with a loop.
+        /// Can be called by other continuable methods.
+        /// </summary>
+        [Continuable]
+        public int InnerSum(int n)
+        {
+            int sum = 0;
+            for (int i = 1; i <= n; i++)
+            {
+                sum += i;
+            }
+            return sum;
+        }
+
+        /// <summary>
+        /// An outer method that calls InnerSum.
+        /// The generator transforms calls to [Continuable] methods.
+        /// Tests nested method calls with yield points.
+        /// </summary>
+        [Continuable]
+        public int OuterCallsInner()
+        {
+            int result = 0;
+            result = InnerSum(5); // Generator will transform this
+            return result + 100; // Add 100 to distinguish from direct call
+        }
+
+        /// <summary>
+        /// A method that makes multiple nested calls.
+        /// </summary>
+        [Continuable]
+        public int MultipleNestedCalls()
+        {
+            int a = InnerSum(3);  // 1+2+3 = 6
+            int b = InnerSum(4);  // 1+2+3+4 = 10
+            return a + b; // 16
+        }
+
+        /// <summary>
+        /// A method that combines nested calls with loops.
+        /// </summary>
+        [Continuable]
+        public int NestedCallInLoop()
+        {
+            int total = 0;
+            for (int i = 1; i <= 3; i++)
+            {
+                total += InnerSum(i);
+            }
+            // InnerSum(1) = 1, InnerSum(2) = 3, InnerSum(3) = 6
+            // Total = 1 + 3 + 6 = 10
+            return total;
+        }
+
+        /// <summary>
+        /// A method that uses nested call result in expression.
+        /// </summary>
+        [Continuable]
+        public int NestedCallInExpression()
+        {
+            int result = InnerSum(5) * 2; // (1+2+3+4+5) * 2 = 30
+            return result;
+        }
+
+        /// <summary>
+        /// A method with nested call inside try block.
+        /// </summary>
+        [Continuable]
+        public int NestedCallInTry()
+        {
+            int result = 0;
+            try
+            {
+                result = InnerSum(4); // 1+2+3+4 = 10
+            }
+            finally
+            {
+                result += 5;
+            }
+            return result; // 15
+        }
+
+        /// <summary>
+        /// Deeply nested: outer calls middle, middle calls inner.
+        /// </summary>
+        [Continuable]
+        public int DeepNesting()
+        {
+            int result = MiddleMethod(3);
+            return result;
+        }
+
+        /// <summary>
+        /// Middle method for deep nesting test.
+        /// </summary>
+        [Continuable]
+        public int MiddleMethod(int n)
+        {
+            int inner = InnerSum(n);
+            return inner * 10; // Multiply by 10 to track call chain
+        }
+
+        #endregion
     }
 }

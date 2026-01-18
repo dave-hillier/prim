@@ -2,15 +2,14 @@
 
 ## Current State
 
-The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (246 total).
+The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (256 total).
 
 ## What's Left
 
-### Roslyn Source Generator (Medium Priority)
+### Roslyn Source Generator (Low Priority)
 
-The generator works for simple cases but is marked as a "simplified implementation". To handle real-world code:
+The generator handles most common cases. Remaining edge cases:
 
-- Nested method calls with yield points
 - Complex control flow (switch expressions, pattern matching)
 
 Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs)
@@ -26,10 +25,11 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
   - Loop transformation (while, for, foreach, do-while)
   - Try-catch-finally blocks (including nested and finally with yield points)
   - Proper SuspendException filtering in catch clauses
+  - Nested continuable method calls (calls between [Continuable] methods are transformed)
 - Instruction counting for preemptive scheduling (budget-based yield enforcement)
 - Security validation for deserialized state (method tokens, yield points, slot types, type whitelist)
 - Direct resume without entry point (EntryPointRegistry maps method tokens to delegates)
 - Performance benchmarks (transform overhead, suspension/resume, serialization, validation)
 - Stable hashing for method tokens
 - Working samples (Generator, MigrationDemo)
-- Comprehensive test coverage (246 tests passing)
+- Comprehensive test coverage (256 tests passing)

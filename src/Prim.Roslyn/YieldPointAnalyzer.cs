@@ -24,6 +24,16 @@ namespace Prim.Roslyn
         /// IDs of finally blocks that need to execute if suspending at this point.
         /// </summary>
         public List<int> EnclosingFinallyBlocks { get; set; } = new List<int>();
+
+        /// <summary>
+        /// For NestedMethodCall yield points, the name of the method being called.
+        /// </summary>
+        public string CalledMethodName { get; set; }
+
+        /// <summary>
+        /// For NestedMethodCall yield points, the syntax node of the invocation.
+        /// </summary>
+        public InvocationExpressionSyntax InvocationSyntax { get; set; }
     }
 
     /// <summary>
@@ -68,7 +78,12 @@ namespace Prim.Roslyn
         /// <summary>
         /// Explicit yield call.
         /// </summary>
-        ExplicitYield
+        ExplicitYield,
+
+        /// <summary>
+        /// A call to another continuable method that may yield.
+        /// </summary>
+        NestedMethodCall
     }
 
     /// <summary>
@@ -245,13 +260,23 @@ namespace Prim.Roslyn
 
             public override void VisitInvocationExpression(InvocationExpressionSyntax node)
             {
-                // Check if this is a call to Suspend.Yield or similar
                 var methodName = GetMethodName(node);
+                var simpleMethodName = GetSimpleMethodName(node);
+
+                // Check if this is a call to Suspend.Yield or similar
                 if (methodName == "Yield" || methodName == "CheckYield" ||
                     methodName.EndsWith(".Yield") || methodName.EndsWith(".CheckYield"))
                 {
                     AddYieldPoint(node.GetLocation(), YieldPointKind.ExplicitYield);
                 }
+                // Check if this is a call to a continuable method (ending with _Continuable)
+                else if (simpleMethodName.EndsWith("_Continuable"))
+                {
+                    var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.NestedMethodCall);
+                    yieldPoint.CalledMethodName = simpleMethodName;
+                    yieldPoint.InvocationSyntax = node;
+                }
+
                 base.VisitInvocationExpression(node);
             }
 
@@ -261,6 +286,16 @@ namespace Prim.Roslyn
                 {
                     IdentifierNameSyntax id => id.Identifier.Text,
                     MemberAccessExpressionSyntax ma => ma.ToString(),
+                    _ => ""
+                };
+            }
+
+            private static string GetSimpleMethodName(InvocationExpressionSyntax invocation)
+            {
+                return invocation.Expression switch
+                {
+                    IdentifierNameSyntax id => id.Identifier.Text,
+                    MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
                     _ => ""
                 };
             }
