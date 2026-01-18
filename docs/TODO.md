@@ -2,7 +2,7 @@
 
 ## Current State
 
-The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (223 total).
+The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (238 total).
 
 ## What's Left
 
@@ -16,10 +16,6 @@ The generator works for simple cases but is marked as a "simplified implementati
 - Complex control flow (switch expressions, pattern matching)
 
 Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs)
-
-### Minor Items
-
-- **Direct resume** - `RunRestoringWithContext<T>()` throws NotImplementedException; would allow resuming without re-specifying the entry point
 
 ### Testing Work Needed
 
@@ -36,6 +32,7 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 - Roslyn source generator (works for simple cases)
 - Instruction counting for preemptive scheduling (budget-based yield enforcement)
 - Security validation for deserialized state (method tokens, yield points, slot types, type whitelist)
+- Direct resume without entry point (EntryPointRegistry maps method tokens to delegates)
 - Stable hashing for method tokens
 - Working samples (Generator, MigrationDemo)
-- Comprehensive test coverage (223 tests passing)
+- Comprehensive test coverage (238 tests passing)

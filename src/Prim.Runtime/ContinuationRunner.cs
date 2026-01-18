@@ -21,6 +21,12 @@ namespace Prim.Runtime
         public ContinuationValidator Validator { get; set; }
 
         /// <summary>
+        /// Registry of entry point delegates for direct resume support.
+        /// When set, allows resuming continuations without re-specifying the entry point.
+        /// </summary>
+        public EntryPointRegistry EntryPoints { get; set; }
+
+        /// <summary>
         /// Creates a new ContinuationRunner.
         /// </summary>
         public ContinuationRunner()
@@ -50,6 +56,27 @@ namespace Prim.Runtime
         {
             Serializer = serializer;
             Validator = validator;
+        }
+
+        /// <summary>
+        /// Creates a new ContinuationRunner with an entry point registry.
+        /// </summary>
+        public ContinuationRunner(EntryPointRegistry entryPoints)
+        {
+            EntryPoints = entryPoints;
+        }
+
+        /// <summary>
+        /// Creates a new ContinuationRunner with all components.
+        /// </summary>
+        public ContinuationRunner(
+            IContinuationSerializer serializer,
+            ContinuationValidator validator,
+            EntryPointRegistry entryPoints)
+        {
+            Serializer = serializer;
+            Validator = validator;
+            EntryPoints = entryPoints;
         }
 
         /// <summary>
@@ -149,12 +176,44 @@ namespace Prim.Runtime
 
         private ContinuationResult<T> RunRestoringWithContext<T>(ScriptContext context)
         {
-            // When restoring, we need the entry point function to be called.
-            // The generated code will handle the restoration based on IsRestoring.
-            // This is a placeholder - actual restoration requires knowing the entry point.
-            throw new NotImplementedException(
-                "Direct resume without entry point requires runtime metadata. " +
-                "Use Resume(state, resumeValue, entryPoint) instead.");
+            if (EntryPoints == null)
+            {
+                throw new InvalidOperationException(
+                    "Direct resume requires an EntryPointRegistry. " +
+                    "Either set the EntryPoints property or use Resume(state, resumeValue, entryPoint).");
+            }
+
+            // Find the root frame (entry point) by following the Caller chain
+            var rootFrame = GetRootFrame(context.FrameChain);
+            if (rootFrame == null)
+            {
+                throw new InvalidOperationException(
+                    "Cannot resume: continuation state has no frames.");
+            }
+
+            // Look up the entry point delegate by method token
+            if (!EntryPoints.TryGet<T>(rootFrame.MethodToken, out var entryPoint))
+            {
+                throw new InvalidOperationException(
+                    $"No entry point registered for method token {rootFrame.MethodToken}. " +
+                    "Register entry points with EntryPoints.Register() before resuming.");
+            }
+
+            return RunWithContext(context, entryPoint);
+        }
+
+        /// <summary>
+        /// Gets the root (outermost) frame from a frame chain.
+        /// </summary>
+        private static HostFrameRecord GetRootFrame(HostFrameRecord frame)
+        {
+            if (frame == null) return null;
+
+            while (frame.Caller != null)
+            {
+                frame = frame.Caller;
+            }
+            return frame;
         }
     }
 

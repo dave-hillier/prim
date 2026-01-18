@@ -467,6 +467,233 @@ namespace Prim.Tests.Unit
         }
 
         #endregion
+
+        #region Entry Point Registry Tests
+
+        [Fact]
+        public void EntryPointRegistry_Register_AndRetrieve()
+        {
+            var registry = new EntryPointRegistry();
+            Func<int> entryPoint = () => 42;
+
+            registry.Register(12345, entryPoint);
+
+            Assert.True(registry.TryGet<int>(12345, out var retrieved));
+            Assert.Same(entryPoint, retrieved);
+        }
+
+        [Fact]
+        public void EntryPointRegistry_TryGet_ReturnsFalseForUnregistered()
+        {
+            var registry = new EntryPointRegistry();
+
+            Assert.False(registry.TryGet<int>(99999, out var retrieved));
+            Assert.Null(retrieved);
+        }
+
+        [Fact]
+        public void EntryPointRegistry_TryGet_ReturnsFalseForWrongType()
+        {
+            var registry = new EntryPointRegistry();
+            Func<string> entryPoint = () => "hello";
+
+            registry.Register(12345, entryPoint);
+
+            // Try to get as Func<int> - should fail
+            Assert.False(registry.TryGet<int>(12345, out var retrieved));
+            Assert.Null(retrieved);
+        }
+
+        [Fact]
+        public void EntryPointRegistry_RegisterAction_AndRetrieve()
+        {
+            var registry = new EntryPointRegistry();
+            var called = false;
+            Action entryPoint = () => called = true;
+
+            registry.Register(12345, entryPoint);
+
+            Assert.True(registry.TryGetAction(12345, out var retrieved));
+            Assert.Same(entryPoint, retrieved);
+            retrieved();
+            Assert.True(called);
+        }
+
+        [Fact]
+        public void EntryPointRegistry_Contains()
+        {
+            var registry = new EntryPointRegistry();
+            registry.Register(12345, () => 42);
+
+            Assert.True(registry.Contains(12345));
+            Assert.False(registry.Contains(99999));
+        }
+
+        [Fact]
+        public void EntryPointRegistry_Unregister()
+        {
+            var registry = new EntryPointRegistry();
+            registry.Register(12345, () => 42);
+
+            Assert.True(registry.Unregister(12345));
+            Assert.False(registry.Contains(12345));
+            Assert.False(registry.Unregister(12345)); // Already removed
+        }
+
+        [Fact]
+        public void EntryPointRegistry_Count()
+        {
+            var registry = new EntryPointRegistry();
+
+            Assert.Equal(0, registry.Count);
+
+            registry.Register(1, () => 1);
+            registry.Register(2, () => 2);
+            registry.Register(3, () => 3);
+
+            Assert.Equal(3, registry.Count);
+        }
+
+        [Fact]
+        public void EntryPointRegistry_Clear()
+        {
+            var registry = new EntryPointRegistry();
+            registry.Register(1, () => 1);
+            registry.Register(2, () => 2);
+
+            registry.Clear();
+
+            Assert.Equal(0, registry.Count);
+            Assert.False(registry.Contains(1));
+        }
+
+        [Fact]
+        public void EntryPointRegistry_OverwriteExisting()
+        {
+            var registry = new EntryPointRegistry();
+            Func<int> first = () => 1;
+            Func<int> second = () => 2;
+
+            registry.Register(12345, first);
+            registry.Register(12345, second);
+
+            Assert.True(registry.TryGet<int>(12345, out var retrieved));
+            Assert.Same(second, retrieved);
+        }
+
+        #endregion
+
+        #region Direct Resume Tests
+
+        [Fact]
+        public void ContinuationRunner_Resume_WithoutRegistry_ThrowsInvalidOperation()
+        {
+            var runner = new ContinuationRunner();
+            var frame = new HostFrameRecord(12345, 0, new object[0], null);
+            var state = new ContinuationState(frame);
+            var continuation = new Continuation<int>(state);
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                runner.Resume(continuation));
+
+            Assert.Contains("EntryPointRegistry", ex.Message);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Resume_WithEmptyState_ThrowsInvalidOperation()
+        {
+            var registry = new EntryPointRegistry();
+            var runner = new ContinuationRunner { EntryPoints = registry };
+            var state = new ContinuationState(null); // No frames
+            var continuation = new Continuation<int>(state);
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                runner.Resume(continuation));
+
+            Assert.Contains("no frames", ex.Message);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Resume_WithUnregisteredMethod_ThrowsInvalidOperation()
+        {
+            var registry = new EntryPointRegistry();
+            var runner = new ContinuationRunner { EntryPoints = registry };
+            var frame = new HostFrameRecord(99999, 0, new object[0], null);
+            var state = new ContinuationState(frame);
+            var continuation = new Continuation<int>(state);
+
+            var ex = Assert.Throws<InvalidOperationException>(() =>
+                runner.Resume(continuation));
+
+            Assert.Contains("No entry point registered", ex.Message);
+            Assert.Contains("99999", ex.Message);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Resume_FindsRootFrame()
+        {
+            // Test that we find the outermost frame (root) for entry point lookup
+            var registry = new EntryPointRegistry();
+            var runner = new ContinuationRunner { EntryPoints = registry };
+
+            const int rootToken = 100;
+            const int middleToken = 200;
+            const int innerToken = 300;
+
+            // Only register the root entry point
+            var called = false;
+            registry.Register<int>(rootToken, () =>
+            {
+                called = true;
+                return 42;
+            });
+
+            // Build a 3-level stack: root -> middle -> inner
+            var root = new HostFrameRecord(rootToken, 0, new object[0], null);
+            var middle = new HostFrameRecord(middleToken, 0, new object[0], root);
+            var inner = new HostFrameRecord(innerToken, 0, new object[0], middle);
+
+            var state = new ContinuationState(inner);
+            var continuation = new Continuation<int>(state);
+
+            // Resume should find root frame and call its entry point
+            var result = runner.Resume(continuation);
+
+            Assert.True(called);
+            Assert.True(result.IsCompleted);
+            Assert.Equal(42, ((ContinuationResult<int>.Completed)result).Value);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Constructor_WithEntryPoints()
+        {
+            var registry = new EntryPointRegistry();
+            var runner = new ContinuationRunner(registry);
+
+            Assert.Same(registry, runner.EntryPoints);
+        }
+
+        [Fact]
+        public void ContinuationRunner_Constructor_WithAllComponents()
+        {
+            var serializer = new TestSerializer();
+            var validator = new ContinuationValidator();
+            var registry = new EntryPointRegistry();
+
+            var runner = new ContinuationRunner(serializer, validator, registry);
+
+            Assert.Same(serializer, runner.Serializer);
+            Assert.Same(validator, runner.Validator);
+            Assert.Same(registry, runner.EntryPoints);
+        }
+
+        private class TestSerializer : IContinuationSerializer
+        {
+            public byte[] Serialize(ContinuationState state) => new byte[0];
+            public ContinuationState Deserialize(byte[] data) => new ContinuationState(null);
+        }
+
+        #endregion
     }
 }
 
