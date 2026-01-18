@@ -14,6 +14,13 @@ namespace Prim.Runtime
         public IContinuationSerializer Serializer { get; set; }
 
         /// <summary>
+        /// The validator to use for continuation state (optional).
+        /// When set, all continuation states are validated before resumption.
+        /// This is critical for security when accepting untrusted state.
+        /// </summary>
+        public ContinuationValidator Validator { get; set; }
+
+        /// <summary>
         /// Creates a new ContinuationRunner.
         /// </summary>
         public ContinuationRunner()
@@ -26,6 +33,23 @@ namespace Prim.Runtime
         public ContinuationRunner(IContinuationSerializer serializer)
         {
             Serializer = serializer;
+        }
+
+        /// <summary>
+        /// Creates a new ContinuationRunner with a validator.
+        /// </summary>
+        public ContinuationRunner(ContinuationValidator validator)
+        {
+            Validator = validator;
+        }
+
+        /// <summary>
+        /// Creates a new ContinuationRunner with both serializer and validator.
+        /// </summary>
+        public ContinuationRunner(IContinuationSerializer serializer, ContinuationValidator validator)
+        {
+            Serializer = serializer;
+            Validator = validator;
         }
 
         /// <summary>
@@ -65,9 +89,13 @@ namespace Prim.Runtime
         /// <param name="continuation">The continuation to resume.</param>
         /// <param name="resumeValue">Value to pass to the resume point (default: null).</param>
         /// <returns>Completed with result or Suspended again.</returns>
+        /// <exception cref="ValidationException">If validator is set and validation fails.</exception>
         public ContinuationResult<T> Resume<T>(Continuation<T> continuation, object resumeValue = null)
         {
             if (continuation == null) throw new ArgumentNullException(nameof(continuation));
+
+            // Validate if validator is configured
+            Validator?.Validate(continuation.State);
 
             var context = new ScriptContext(continuation.State, resumeValue);
             return RunRestoringWithContext<T>(context);
@@ -81,6 +109,7 @@ namespace Prim.Runtime
         /// <param name="resumeValue">Value to pass to the resume point.</param>
         /// <param name="entryPoint">The entry point function for the computation.</param>
         /// <returns>Completed with result or Suspended again.</returns>
+        /// <exception cref="ValidationException">If validator is set and validation fails.</exception>
         public ContinuationResult<T> Resume<T>(
             ContinuationState state,
             object resumeValue,
@@ -88,6 +117,9 @@ namespace Prim.Runtime
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (entryPoint == null) throw new ArgumentNullException(nameof(entryPoint));
+
+            // Validate if validator is configured
+            Validator?.Validate(state);
 
             var context = new ScriptContext(state, resumeValue);
             return RunWithContext(context, entryPoint);
