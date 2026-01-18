@@ -19,7 +19,6 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 
 ### Testing Work Needed
 
-- Performance benchmarks comparing transformed vs original code overhead
 - Tests for the Roslyn generator with complex control flow
 
 ## What's Done
@@ -33,6 +32,7 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 - Instruction counting for preemptive scheduling (budget-based yield enforcement)
 - Security validation for deserialized state (method tokens, yield points, slot types, type whitelist)
 - Direct resume without entry point (EntryPointRegistry maps method tokens to delegates)
+- Performance benchmarks (transform overhead, suspension/resume, serialization, validation)
 - Stable hashing for method tokens
 - Working samples (Generator, MigrationDemo)
 - Comprehensive test coverage (238 tests passing)
