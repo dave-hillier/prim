@@ -107,7 +107,7 @@ namespace Prim.Runtime
         {
             if (YieldRequested != 0)
             {
-                YieldRequested = 0;
+                Interlocked.Exchange(ref YieldRequested, 0);
                 throw new SuspendException(yieldPointId);
             }
         }
@@ -122,7 +122,7 @@ namespace Prim.Runtime
         {
             if (YieldRequested != 0)
             {
-                YieldRequested = 0;
+                Interlocked.Exchange(ref YieldRequested, 0);
                 throw new SuspendException(yieldPointId, value);
             }
         }
@@ -139,7 +139,7 @@ namespace Prim.Runtime
             InstructionBudget -= cost;
             if (YieldRequested != 0 || InstructionBudget <= 0)
             {
-                YieldRequested = 0;
+                Interlocked.Exchange(ref YieldRequested, 0);
                 throw new SuspendException(yieldPointId);
             }
         }
@@ -156,7 +156,7 @@ namespace Prim.Runtime
             InstructionBudget -= cost;
             if (YieldRequested != 0 || InstructionBudget <= 0)
             {
-                YieldRequested = 0;
+                Interlocked.Exchange(ref YieldRequested, 0);
                 throw new SuspendException(yieldPointId, value);
             }
         }
