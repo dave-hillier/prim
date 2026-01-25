@@ -65,7 +65,13 @@ namespace Prim.Runtime
         /// <summary>
         /// Priority level (higher = more time slices).
         /// </summary>
-        public int Priority { get; set; } = 1;
+        public int Priority
+        {
+            get => _priority;
+            set => _priority = Math.Max(1, value);
+        }
+
+        private int _priority = 1;
 
         /// <summary>
         /// User data associated with this script.
