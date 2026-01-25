@@ -74,7 +74,7 @@ internal class Program
     static void RunSerializationDemo()
     {
         var serializer = new JsonContinuationSerializer();
-        var runner = new ContinuationRunner(serializer);
+        var runner = new ContinuationRunner { Serializer = serializer };
         var counter = new Counter();
 
         // Start and run a few iterations
@@ -98,7 +98,7 @@ internal class Program
 
             // Simulate process restart - create new objects
             var newSerializer = new JsonContinuationSerializer();
-            var newRunner = new ContinuationRunner(newSerializer);
+            var newRunner = new ContinuationRunner { Serializer = newSerializer };
             var newCounter = new Counter();
 
             // Deserialize and restore the counter state from the serialized state
