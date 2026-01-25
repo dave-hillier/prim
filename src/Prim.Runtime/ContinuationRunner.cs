@@ -27,59 +27,6 @@ namespace Prim.Runtime
         public EntryPointRegistry EntryPoints { get; set; }
 
         /// <summary>
-        /// Creates a new ContinuationRunner.
-        /// </summary>
-        public ContinuationRunner()
-        {
-        }
-
-        /// <summary>
-        /// Creates a new ContinuationRunner with a serializer.
-        /// </summary>
-        public ContinuationRunner(IContinuationSerializer serializer)
-        {
-            Serializer = serializer;
-        }
-
-        /// <summary>
-        /// Creates a new ContinuationRunner with a validator.
-        /// </summary>
-        public ContinuationRunner(ContinuationValidator validator)
-        {
-            Validator = validator;
-        }
-
-        /// <summary>
-        /// Creates a new ContinuationRunner with both serializer and validator.
-        /// </summary>
-        public ContinuationRunner(IContinuationSerializer serializer, ContinuationValidator validator)
-        {
-            Serializer = serializer;
-            Validator = validator;
-        }
-
-        /// <summary>
-        /// Creates a new ContinuationRunner with an entry point registry.
-        /// </summary>
-        public ContinuationRunner(EntryPointRegistry entryPoints)
-        {
-            EntryPoints = entryPoints;
-        }
-
-        /// <summary>
-        /// Creates a new ContinuationRunner with all components.
-        /// </summary>
-        public ContinuationRunner(
-            IContinuationSerializer serializer,
-            ContinuationValidator validator,
-            EntryPointRegistry entryPoints)
-        {
-            Serializer = serializer;
-            Validator = validator;
-            EntryPoints = entryPoints;
-        }
-
-        /// <summary>
         /// Runs a computation that may suspend.
         /// </summary>
         /// <typeparam name="T">The return type of the computation.</typeparam>
