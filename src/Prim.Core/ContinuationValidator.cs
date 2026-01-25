@@ -171,6 +171,10 @@ namespace Prim.Core
             }
 
             var errors = new List<string>();
+            if (state.Version != ContinuationState.CurrentVersion)
+            {
+                errors.Add($"Unsupported continuation version {state.Version} (expected {ContinuationState.CurrentVersion})");
+            }
             var frame = state.StackHead;
             var frameIndex = 0;
 
