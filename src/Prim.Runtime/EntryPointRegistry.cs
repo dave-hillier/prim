@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Collections.Concurrent;
 
 namespace Prim.Runtime
 {
@@ -10,7 +10,7 @@ namespace Prim.Runtime
     /// </summary>
     public sealed class EntryPointRegistry
     {
-        private readonly Dictionary<int, Delegate> _entryPoints = new Dictionary<int, Delegate>();
+        private readonly ConcurrentDictionary<int, Delegate> _entryPoints = new ConcurrentDictionary<int, Delegate>();
 
         /// <summary>
         /// Registers an entry point delegate for a method token.
