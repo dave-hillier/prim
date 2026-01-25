@@ -71,6 +71,16 @@ namespace Prim.Serialization
         /// <param name="obj">The deserialized object.</param>
         public void RegisterDeserialized(int id, object obj)
         {
+            if (id < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(id), id, "Deserialized object IDs must be non-negative.");
+            }
+
+            if (id < _idToObject.Count && _idToObject[id] != null && !ReferenceEquals(_idToObject[id], obj))
+            {
+                throw new InvalidOperationException($"Object ID {id} is already registered to a different instance.");
+            }
+
             // Ensure list is large enough
             while (_idToObject.Count <= id)
             {
