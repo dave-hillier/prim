@@ -77,7 +77,6 @@ namespace Prim.Roslyn
         private int _nextStateId = 0;
         private int _indentLevel = 0;
         private int _nextLocalSlot = 0;
-        private string _currentExceptionVar = "__ex";
 
         public StateMachineRewriter(MethodDeclarationSyntax method, SemanticModel semanticModel, int methodToken)
         {

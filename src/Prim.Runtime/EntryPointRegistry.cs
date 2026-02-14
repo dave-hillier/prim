@@ -42,7 +42,7 @@ namespace Prim.Runtime
         /// <returns>True if the entry point was removed.</returns>
         public bool Unregister(int methodToken)
         {
-            return _entryPoints.Remove(methodToken);
+            return _entryPoints.TryRemove(methodToken, out _);
         }
 
         /// <summary>
