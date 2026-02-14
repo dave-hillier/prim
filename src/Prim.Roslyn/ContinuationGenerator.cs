@@ -95,7 +95,16 @@ namespace Prim.Roslyn
             var typeDecl = method.Parent as TypeDeclarationSyntax;
             if (typeDecl == null) return "UnknownType";
 
-            var typeName = typeDecl.Identifier.Text;
+            // Walk all parent type declarations to handle nested types
+            var typeNames = new System.Collections.Generic.List<string>();
+            var current = typeDecl;
+            while (current != null)
+            {
+                typeNames.Insert(0, current.Identifier.Text);
+                current = current.Parent as TypeDeclarationSyntax;
+            }
+            var typeName = string.Join(".", typeNames);
+
             var ns = GetNamespace(typeDecl);
 
             return string.IsNullOrEmpty(ns) ? typeName : $"{ns}.{typeName}";
@@ -315,9 +324,10 @@ namespace Prim.Roslyn
                 {
                     if (value == null) return 0;
                     uint hash = fnvOffsetBasis;
-                    foreach (char c in value)
+                    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value);
+                    foreach (byte b in bytes)
                     {
-                        hash ^= c;
+                        hash ^= b;
                         hash *= fnvPrime;
                     }
                     return (int)hash;

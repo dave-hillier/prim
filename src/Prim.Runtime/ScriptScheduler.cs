@@ -257,7 +257,12 @@ namespace Prim.Runtime
 
             lock (_lock)
             {
-                return _scripts.Remove(script);
+                var removed = _scripts.Remove(script);
+                if (removed)
+                {
+                    PurgeFromRunQueue(script);
+                }
+                return removed;
             }
         }
 
@@ -278,18 +283,38 @@ namespace Prim.Runtime
         /// <returns>True if work was done, false if all scripts are idle/complete.</returns>
         public bool Tick()
         {
-            ScriptInstance script;
+            ScriptInstance script = null;
 
             lock (_lock)
             {
-                if (_runQueue.Count == 0)
+                // Skip stale entries (removed, completed, waiting, or failed scripts)
+                while (_runQueue.Count > 0)
                 {
-                    RebuildRunQueue();
-                    if (_runQueue.Count == 0)
-                        return false;
+                    var candidate = _runQueue.Dequeue();
+                    if (_scripts.Contains(candidate) &&
+                        (candidate.State == ScriptState.Ready || candidate.State == ScriptState.Suspended))
+                    {
+                        script = candidate;
+                        break;
+                    }
                 }
 
-                script = _runQueue.Dequeue();
+                if (script == null)
+                {
+                    RebuildRunQueue();
+                    while (_runQueue.Count > 0)
+                    {
+                        var candidate = _runQueue.Dequeue();
+                        if (_scripts.Contains(candidate) &&
+                            (candidate.State == ScriptState.Ready || candidate.State == ScriptState.Suspended))
+                        {
+                            script = candidate;
+                            break;
+                        }
+                    }
+                    if (script == null)
+                        return false;
+                }
             }
 
             RunScript(script);
@@ -403,6 +428,7 @@ namespace Prim.Runtime
                 {
                     var previousState = script.State;
                     script.State = ScriptState.Waiting;
+                    PurgeFromRunQueue(script);
                     OnScriptStateChanged(script, previousState);
                 }
             }
@@ -476,6 +502,19 @@ namespace Prim.Runtime
                 script.ContinuationState = null;
                 OnScriptStateChanged(script, previousState);
                 OnScriptFailed(script, previousState);
+            }
+        }
+
+        private void PurgeFromRunQueue(ScriptInstance script)
+        {
+            var count = _runQueue.Count;
+            for (int i = 0; i < count; i++)
+            {
+                var item = _runQueue.Dequeue();
+                if (item != script)
+                {
+                    _runQueue.Enqueue(item);
+                }
             }
         }
 

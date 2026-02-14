@@ -130,15 +130,12 @@ namespace Prim.Tests.Cecil
             il.Append(il.Create(OpCodes.Call, helperMethod));
             il.Append(il.Create(OpCodes.Ret));
 
-            // Now check what IsExternalCall would compare:
-            // method.DeclaringType.Scope.Name -> module name
-            // _method.Module.Assembly.Name.Name -> assembly name
+            // IsExternalCall compares method.DeclaringType.Scope.Name with _method.Module.Name
+            // Both should return the module name for same-assembly calls.
             var calledAssemblyName = helperMethod.DeclaringType.Scope.Name;
-            var thisAssemblyName = method.Module.Assembly.Name.Name;
+            var thisAssemblyName = method.Module.Name;
 
-            // BUG: These should match for same-assembly calls, but Scope.Name returns
-            // the module name ("TestModule") while Assembly.Name.Name returns the
-            // assembly name ("TestAssembly"). They will never be equal.
+            // After fix: both use the module name, so same-assembly calls match correctly.
             Assert.Equal(thisAssemblyName, calledAssemblyName);
         }
 

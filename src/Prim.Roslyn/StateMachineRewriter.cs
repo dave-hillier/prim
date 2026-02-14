@@ -77,6 +77,8 @@ namespace Prim.Roslyn
         private int _nextStateId = 0;
         private int _indentLevel = 0;
         private int _nextLocalSlot = 0;
+        private readonly Stack<string> _breakTargets = new Stack<string>();
+        private readonly Stack<string> _continueTargets = new Stack<string>();
 
         public StateMachineRewriter(MethodDeclarationSyntax method, SemanticModel semanticModel, int methodToken)
         {
@@ -163,7 +165,21 @@ namespace Prim.Roslyn
                 if (forStmt.Declaration != null)
                 {
                     var typeName = forStmt.Declaration.Type.ToString();
-                    if (typeName == "var") typeName = "int"; // Common case
+                    if (typeName == "var")
+                    {
+                        if (_semanticModel != null)
+                        {
+                            var typeInfo = _semanticModel.GetTypeInfo(forStmt.Declaration.Type);
+                            if (typeInfo.Type != null)
+                                typeName = typeInfo.Type.ToDisplayString();
+                            else
+                                typeName = "int";
+                        }
+                        else
+                        {
+                            typeName = "int";
+                        }
+                    }
 
                     foreach (var variable in forStmt.Declaration.Variables)
                     {
@@ -351,7 +367,7 @@ namespace Prim.Roslyn
             // Transform the method body
             if (_method.Body != null)
             {
-                TransformBlock(_method.Body, isVoid, returnType);
+                TransformBlock(_method.Body, isVoid, returnType, isTopLevel: true);
             }
             else if (_method.ExpressionBody != null)
             {
@@ -445,20 +461,23 @@ namespace Prim.Roslyn
             }
         }
 
-        private void TransformBlock(BlockSyntax block, bool isVoid, string returnType)
+        private void TransformBlock(BlockSyntax block, bool isVoid, string returnType, bool isTopLevel = false)
         {
             foreach (var statement in block.Statements)
             {
                 TransformStatement(statement, isVoid, returnType);
             }
 
-            // If block doesn't end with return, add goto exit
-            var lastStatement = block.Statements.LastOrDefault();
-            if (lastStatement != null &&
-                !(lastStatement is ReturnStatementSyntax) &&
-                !(lastStatement is ThrowStatementSyntax))
+            // Only add goto __exit for the top-level method body, not nested blocks
+            if (isTopLevel)
             {
-                WriteLine("goto __exit;");
+                var lastStatement = block.Statements.LastOrDefault();
+                if (lastStatement != null &&
+                    !(lastStatement is ReturnStatementSyntax) &&
+                    !(lastStatement is ThrowStatementSyntax))
+                {
+                    WriteLine("goto __exit;");
+                }
             }
         }
 
@@ -507,15 +526,24 @@ namespace Prim.Roslyn
                     break;
 
                 case BlockSyntax blockStmt:
-                    TransformBlock(blockStmt, isVoid, returnType);
+                    foreach (var stmt in blockStmt.Statements)
+                    {
+                        TransformStatement(stmt, isVoid, returnType);
+                    }
                     break;
 
                 case BreakStatementSyntax:
-                    WriteLine("break;");
+                    if (_breakTargets.Count > 0)
+                        WriteLine($"goto {_breakTargets.Peek()};");
+                    else
+                        WriteLine("break;");
                     break;
 
                 case ContinueStatementSyntax:
-                    WriteLine("continue;");
+                    if (_continueTargets.Count > 0)
+                        WriteLine($"goto {_continueTargets.Peek()};");
+                    else
+                        WriteLine("continue;");
                     break;
 
                 case ThrowStatementSyntax throwStmt:
@@ -583,10 +611,7 @@ namespace Prim.Roslyn
             {
                 var methodName = GetMethodName(invocation);
                 return methodName == "Yield" ||
-                       methodName == "CheckYield" ||
-                       methodName.EndsWith(".Yield") ||
-                       methodName.EndsWith(".CheckYield") ||
-                       methodName == "ScriptContext.Yield";
+                       methodName == "CheckYield";
             }
             return false;
         }
@@ -596,7 +621,7 @@ namespace Prim.Roslyn
             return invocation.Expression switch
             {
                 IdentifierNameSyntax id => id.Identifier.Text,
-                MemberAccessExpressionSyntax ma => ma.ToString(),
+                MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
                 _ => ""
             };
         }
@@ -659,6 +684,9 @@ namespace Prim.Roslyn
             var loopStartLabel = $"__while_{_nextStateId}";
             var loopEndLabel = $"__whileEnd_{_nextStateId}";
 
+            _breakTargets.Push(loopEndLabel);
+            _continueTargets.Push(loopStartLabel);
+
             WriteLine($"{loopStartLabel}:");
 
             // Emit yield point at loop back-edge
@@ -682,12 +710,19 @@ namespace Prim.Roslyn
 
             WriteLine($"goto {loopStartLabel};");
             WriteLine($"{loopEndLabel}:;");
+
+            _breakTargets.Pop();
+            _continueTargets.Pop();
         }
 
         private void TransformDoStatement(DoStatementSyntax doStmt, bool isVoid, string returnType)
         {
             var loopStartLabel = $"__do_{_nextStateId}";
             var loopCheckLabel = $"__doCheck_{_nextStateId}";
+            var loopEndLabel = $"__doEnd_{_nextStateId}";
+
+            _breakTargets.Push(loopEndLabel);
+            _continueTargets.Push(loopCheckLabel);
 
             WriteLine($"{loopStartLabel}:");
 
@@ -711,12 +746,20 @@ namespace Prim.Roslyn
 
             WriteLine($"if ({doStmt.Condition})");
             WriteLine($"    goto {loopStartLabel};");
+            WriteLine($"{loopEndLabel}:;");
+
+            _breakTargets.Pop();
+            _continueTargets.Pop();
         }
 
         private void TransformForStatement(ForStatementSyntax forStmt, bool isVoid, string returnType)
         {
             var loopStartLabel = $"__for_{_nextStateId}";
             var loopEndLabel = $"__forEnd_{_nextStateId}";
+            var loopIncrementLabel = $"__forIncrement_{_nextStateId}";
+
+            _breakTargets.Push(loopEndLabel);
+            _continueTargets.Push(loopIncrementLabel);
 
             // Emit initializers (locals are already hoisted)
             if (forStmt.Declaration != null)
@@ -760,6 +803,7 @@ namespace Prim.Roslyn
             }
 
             // Emit incrementors
+            WriteLine($"{loopIncrementLabel}:");
             foreach (var incrementor in forStmt.Incrementors)
             {
                 WriteLine($"{incrementor};");
@@ -767,6 +811,9 @@ namespace Prim.Roslyn
 
             WriteLine($"goto {loopStartLabel};");
             WriteLine($"{loopEndLabel}:;");
+
+            _breakTargets.Pop();
+            _continueTargets.Pop();
         }
 
         private void TransformForEachStatement(ForEachStatementSyntax foreachStmt, bool isVoid, string returnType)
@@ -781,6 +828,9 @@ namespace Prim.Roslyn
             WriteLine("try");
             WriteLine("{");
             _indentLevel++;
+
+            _breakTargets.Push(loopEndLabel);
+            _continueTargets.Push(loopStartLabel);
 
             WriteLine($"{loopStartLabel}:");
 
@@ -815,6 +865,9 @@ namespace Prim.Roslyn
 
             WriteLine($"goto {loopStartLabel};");
             WriteLine($"{loopEndLabel}:;");
+
+            _breakTargets.Pop();
+            _continueTargets.Pop();
 
             _indentLevel--;
             WriteLine("}");
@@ -1066,18 +1119,21 @@ namespace Prim.Roslyn
         {
             var yieldPointId = _nextStateId++;
             var cost = EstimateNodeCost(node);
+            var resumeLabel = $"__resume_{yieldPointId}";
 
             WriteLine($"// Yield point {yieldPointId} ({kind})");
             WriteLine($"__context.HandleYieldPointWithBudget({yieldPointId}, {cost});");
+            WriteLine($"{resumeLabel}:;");
 
             // Create a state for resuming after this yield point
             var state = new StateInfo
             {
                 StateId = yieldPointId + 1,
-                Label = $"__resume_{yieldPointId}",
+                Label = resumeLabel,
                 Kind = kind,
                 OriginalNode = node
             };
+            state.StatementsAfterYield.Add($"goto {resumeLabel};");
             _states.Add(state);
         }
 

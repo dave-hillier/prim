@@ -36,7 +36,7 @@ namespace Prim.Runtime
         {
             if (computation == null) throw new ArgumentNullException(nameof(computation));
 
-            var context = new ScriptContext();
+            var context = ScriptContext.Current ?? new ScriptContext();
             return RunWithContext<T>(context, computation);
         }
 

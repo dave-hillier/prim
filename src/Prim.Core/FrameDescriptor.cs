@@ -46,9 +46,9 @@ namespace Prim.Core
         {
             MethodToken = methodToken;
             MethodName = methodName ?? throw new ArgumentNullException(nameof(methodName));
-            Slots = slots ?? throw new ArgumentNullException(nameof(slots));
-            YieldPointIds = yieldPointIds ?? throw new ArgumentNullException(nameof(yieldPointIds));
-            LiveSlotsAtYieldPoint = liveSlotsAtYieldPoint ?? throw new ArgumentNullException(nameof(liveSlotsAtYieldPoint));
+            Slots = (FrameSlot[])(slots ?? throw new ArgumentNullException(nameof(slots))).Clone();
+            YieldPointIds = (int[])(yieldPointIds ?? throw new ArgumentNullException(nameof(yieldPointIds))).Clone();
+            LiveSlotsAtYieldPoint = (BitArray[])(liveSlotsAtYieldPoint ?? throw new ArgumentNullException(nameof(liveSlotsAtYieldPoint))).Clone();
 
             if (yieldPointIds.Length != liveSlotsAtYieldPoint.Length)
             {
