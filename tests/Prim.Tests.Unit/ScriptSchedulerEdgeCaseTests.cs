@@ -18,9 +18,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void RemoveScript_DoesNotPreventExecution_IfAlreadyQueued()
         {
-            // BUG: RemoveScript removes from _scripts list but NOT from _runQueue.
-            // A removed script can still be executed via Tick() because it remains
-            // in the queue. This test documents the problematic behavior.
+            // After fix: RemoveScript purges the run queue, preventing execution.
             var scheduler = new ScriptScheduler();
             var executed = false;
 
@@ -33,13 +31,11 @@ namespace Prim.Tests.Unit
             // Remove the script
             Assert.True(scheduler.RemoveScript(script));
 
-            // Tick should still execute it because it's in the run queue
-            // This is a bug - the script was removed but still runs
+            // Tick should NOT execute removed script
             scheduler.Tick();
 
-            // The script was executed despite being removed
-            Assert.True(executed,
-                "Script was executed after removal because RemoveScript doesn't clean the run queue");
+            // After fix: the script was NOT executed because RemoveScript cleans the run queue
+            Assert.False(executed);
         }
 
         #endregion

@@ -180,16 +180,16 @@ namespace Prim.Core
 
             while (frame != null)
             {
-                ValidateFrame(frame, frameIndex, errors);
-                frame = frame.Caller;
-                frameIndex++;
-
                 // Prevent infinite loops from malicious circular references
                 if (frameIndex >= _options.MaxStackDepth)
                 {
                     errors.Add($"Stack depth exceeds maximum allowed ({_options.MaxStackDepth})");
                     break;
                 }
+
+                ValidateFrame(frame, frameIndex, errors);
+                frame = frame.Caller;
+                frameIndex++;
             }
 
             // Validate yielded value if type checking is enabled
@@ -433,7 +433,9 @@ namespace Prim.Core
         public override string ToString()
         {
             if (IsValid) return "Validation succeeded";
-            return $"Validation failed: {string.Join("; ", Errors)}";
+            if (Errors.Count == 1)
+                return $"Validation failed: {Errors[0]}";
+            return $"Validation failed ({Errors.Count} errors): {string.Join("; ", Errors)}";
         }
     }
 

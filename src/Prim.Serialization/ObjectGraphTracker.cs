@@ -13,13 +13,19 @@ namespace Prim.Serialization
     {
         private readonly Dictionary<object, int> _objectToId;
         private readonly List<object> _idToObject;
+        private readonly HashSet<int> _registeredIds;
         private int _nextId;
+        private bool _nullRegistered;
+
+        private static readonly int MaxAllowedId = 10_000;
 
         public ObjectGraphTracker()
         {
             _objectToId = new Dictionary<object, int>(ReferenceEqualityComparer.Instance);
             _idToObject = new List<object>();
+            _registeredIds = new HashSet<int>();
             _nextId = 0;
+            _nullRegistered = false;
         }
 
         /// <summary>
@@ -34,6 +40,9 @@ namespace Prim.Serialization
             if (obj == null)
             {
                 id = -1;
+                if (_nullRegistered)
+                    return false;
+                _nullRegistered = true;
                 return true;
             }
 
@@ -76,7 +85,12 @@ namespace Prim.Serialization
                 throw new ArgumentOutOfRangeException(nameof(id), id, "Deserialized object IDs must be non-negative.");
             }
 
-            if (id < _idToObject.Count && _idToObject[id] != null && !ReferenceEquals(_idToObject[id], obj))
+            if (id > MaxAllowedId)
+            {
+                throw new ArgumentOutOfRangeException(nameof(id), id, $"Deserialized object ID exceeds maximum allowed ({MaxAllowedId}).");
+            }
+
+            if (id < _idToObject.Count && _registeredIds.Contains(id) && !ReferenceEquals(_idToObject[id], obj))
             {
                 throw new InvalidOperationException($"Object ID {id} is already registered to a different instance.");
             }
@@ -87,6 +101,7 @@ namespace Prim.Serialization
                 _idToObject.Add(null);
             }
             _idToObject[id] = obj;
+            _registeredIds.Add(id);
         }
 
         /// <summary>
@@ -96,8 +111,11 @@ namespace Prim.Serialization
         {
             if (id < 0) return null;
             if (id >= _idToObject.Count) return null;
-            return _idToObject[id];
+            if (!_registeredIds.Contains(id)) return null;
+            return _idToObject[id] ?? ObjectGraphTracker.NullSentinel;
         }
+
+        internal static readonly object NullSentinel = new object();
 
         /// <summary>
         /// Clears all tracking state.
@@ -106,7 +124,9 @@ namespace Prim.Serialization
         {
             _objectToId.Clear();
             _idToObject.Clear();
+            _registeredIds.Clear();
             _nextId = 0;
+            _nullRegistered = false;
         }
     }
 

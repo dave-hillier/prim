@@ -193,11 +193,8 @@ namespace Prim.Tests.Unit
             // Mutate the array after construction
             yieldPointIds[0] = 999;
 
-            // BUG: The internal state is corrupted because the array was not copied.
-            // The first assert passes (proving the mutation leaked through),
-            // then the second assert FAILS (proving the array is shared, not copied).
-            Assert.Equal(999, descriptor.YieldPointIds[0]); // passes - mutation visible
-            Assert.Equal(0, descriptor.YieldPointIds[0]);   // FAILS - proves array is shared
+            // After fix: constructor clones the array, so external mutation is not visible.
+            Assert.Equal(0, descriptor.YieldPointIds[0]);
         }
 
         #endregion

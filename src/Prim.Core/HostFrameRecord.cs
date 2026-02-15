@@ -59,11 +59,10 @@ namespace Prim.Core
                 current = current.Caller;
 
                 slow = slow.Caller;
-                fast = fast.Caller?.Caller;
+                fast = fast?.Caller?.Caller;
                 if (fast != null && fast == slow)
                 {
-                    throw new InvalidOperationException(
-                        "Circular frame chain detected in continuation state.");
+                    break; // Circular chain detected - return depth so far
                 }
             }
             return depth;

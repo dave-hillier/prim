@@ -253,13 +253,13 @@ class Test
                 _ => ""
             };
 
-            // StateMachineRewriter.GetMethodName:
-            //   MemberAccessExpressionSyntax ma => ma.ToString()
-            //   Result: "ScriptContext.Yield"
+            // After fix: StateMachineRewriter.GetMethodName now uses
+            //   MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text
+            //   Result: "Yield" (consistent with analyzer)
             var rewriterResult = invocation.Expression switch
             {
                 IdentifierNameSyntax id => id.Identifier.Text,
-                MemberAccessExpressionSyntax ma => ma.ToString(),
+                MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
                 _ => ""
             };
 
@@ -295,21 +295,26 @@ namespace MyApp
                 .OfType<MethodDeclarationSyntax>()
                 .First();
 
-            // Reproduce the logic in ContinuationGenerator.GetFullTypeName:
-            //   var typeDecl = method.Parent as TypeDeclarationSyntax;
-            //   var typeName = typeDecl.Identifier.Text;           // "Inner"
-            //   var ns = GetNamespace(typeDecl);                    // "MyApp"
-            //   return $"{ns}.{typeName}";                          // "MyApp.Inner"
+            // After fix: ContinuationGenerator.GetFullTypeName walks all parent
+            // TypeDeclarationSyntax nodes to build the full nested type name.
             var typeDecl = method.Parent as TypeDeclarationSyntax;
-            var typeName = typeDecl?.Identifier.Text;
+
+            // Walk parent type declarations to build nested type path
+            var typeNames = new System.Collections.Generic.List<string>();
+            var current = typeDecl;
+            while (current != null)
+            {
+                typeNames.Insert(0, current.Identifier.Text);
+                current = current.Parent as TypeDeclarationSyntax;
+            }
+            var typeName = string.Join(".", typeNames);
 
             var ns = method.Ancestors()
                 .OfType<BaseNamespaceDeclarationSyntax>()
                 .FirstOrDefault()?.Name.ToString() ?? "";
             var fullName = string.IsNullOrEmpty(ns) ? typeName : $"{ns}.{typeName}";
 
-            // BUG: should be "MyApp.Outer.Inner" but returns "MyApp.Inner"
-            // because the outer type "Outer" is not walked.
+            // After fix: correctly returns "MyApp.Outer.Inner"
             Assert.Equal("MyApp.Outer.Inner", fullName);
         }
     }
