@@ -185,7 +185,7 @@ namespace Prim.Analysis
             // Consider a call external if it's not in the same assembly
             // and not in the list of internal assemblies
             var calledAssembly = method.DeclaringType.Scope.Name;
-            var thisAssembly = _method.Module.Assembly.Name.Name;
+            var thisAssembly = _method.Module.Name;
 
             if (calledAssembly == thisAssembly)
                 return false;

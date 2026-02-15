@@ -166,7 +166,7 @@ namespace Prim.Tests.Roslyn
         [InlineData(1, 0)]   // i=0 (even): j loop from 0 to -1 = no iterations
         [InlineData(2, 2)]   // i=0: 0 iterations, i=1 (odd): 1*2 = 2
         [InlineData(3, 3)]   // i=0: 0, i=1: 2, i=2 (even, j<2): 0+1 = 1, total = 3
-        [InlineData(5, 13)]  // Complex calculation
+        [InlineData(5, 15)]  // Complex calculation
         public void ComplexControlFlow_ComputesCorrectResult(int input, int expected)
         {
             var instance = new SampleContinuableClass();

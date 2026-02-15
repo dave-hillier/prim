@@ -41,7 +41,7 @@ namespace Prim.Serialization
                 return cached;
             }
 
-            // Try custom resolvers
+            // Try custom resolvers (user-registered, trusted)
             foreach (var resolver in _customResolvers)
             {
                 var resolved = resolver(typeName);
@@ -52,26 +52,10 @@ namespace Prim.Serialization
                 }
             }
 
-            // Try Type.GetType
-            var type = Type.GetType(typeName);
-            if (type != null)
-            {
-                _typeCache[typeName] = type;
-                return type;
-            }
-
-            // Try loading from all loaded assemblies
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                type = assembly.GetType(typeName);
-                if (type != null)
-                {
-                    _typeCache[typeName] = type;
-                    return type;
-                }
-            }
-
-            throw new TypeLoadException($"Could not resolve type: {typeName}");
+            // Only resolve types that are explicitly registered or cached.
+            // Do NOT fall back to Type.GetType or assembly scanning, as that
+            // would allow arbitrary type resolution (security risk).
+            return null;
         }
 
         /// <summary>
@@ -86,6 +70,7 @@ namespace Prim.Serialization
             if (type == typeof(long)) return "long";
             if (type == typeof(short)) return "short";
             if (type == typeof(byte)) return "byte";
+            if (type == typeof(sbyte)) return "sbyte";
             if (type == typeof(bool)) return "bool";
             if (type == typeof(float)) return "float";
             if (type == typeof(double)) return "double";

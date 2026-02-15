@@ -36,7 +36,7 @@ namespace Prim.Runtime
         {
             if (computation == null) throw new ArgumentNullException(nameof(computation));
 
-            var context = new ScriptContext();
+            var context = ScriptContext.Current ?? new ScriptContext();
             return RunWithContext<T>(context, computation);
         }
 
@@ -156,9 +156,22 @@ namespace Prim.Runtime
         {
             if (frame == null) return null;
 
+            // Use Floyd's cycle detection to guard against circular Caller chains
+            var slow = frame;
+            var fast = frame;
+
             while (frame.Caller != null)
             {
                 frame = frame.Caller;
+
+                slow = slow.Caller;
+                fast = fast.Caller?.Caller;
+
+                if (fast != null && fast == slow)
+                {
+                    throw new InvalidOperationException(
+                        "Circular frame chain detected in continuation state.");
+                }
             }
             return frame;
         }

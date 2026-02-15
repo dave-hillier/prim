@@ -22,6 +22,22 @@ namespace Prim.Core
         }
 
         public override string ToString() => $"SuspensionTag<{typeof(TOut).Name}, {typeof(TIn).Name}>({Name})";
+
+        public override bool Equals(object obj)
+        {
+            if (obj is SuspensionTag<TOut, TIn> other)
+            {
+                return Name == other.Name;
+            }
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            return (Name?.GetHashCode() ?? 0) ^
+                   typeof(TOut).GetHashCode() ^
+                   typeof(TIn).GetHashCode();
+        }
     }
 
     /// <summary>

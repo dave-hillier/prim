@@ -180,16 +180,16 @@ namespace Prim.Core
 
             while (frame != null)
             {
-                ValidateFrame(frame, frameIndex, errors);
-                frame = frame.Caller;
-                frameIndex++;
-
                 // Prevent infinite loops from malicious circular references
-                if (frameIndex > _options.MaxStackDepth)
+                if (frameIndex >= _options.MaxStackDepth)
                 {
                     errors.Add($"Stack depth exceeds maximum allowed ({_options.MaxStackDepth})");
                     break;
                 }
+
+                ValidateFrame(frame, frameIndex, errors);
+                frame = frame.Caller;
+                frameIndex++;
             }
 
             // Validate yielded value if type checking is enabled
@@ -341,17 +341,15 @@ namespace Prim.Core
         /// <summary>
         /// Default validation options (strict).
         /// </summary>
-        public static readonly ValidationOptions Default = new ValidationOptions();
+        public static ValidationOptions Default => new ValidationOptions();
 
         /// <summary>
         /// Lenient options for trusted environments.
         /// </summary>
-        public static readonly ValidationOptions Lenient = new ValidationOptions
-        {
-            RequireRegisteredMethods = false,
-            ValidateSlotCounts = false,
-            ValidateSlotTypes = false
-        };
+        public static ValidationOptions Lenient => new ValidationOptions(
+            requireRegisteredMethods: false,
+            validateSlotCounts: false,
+            validateSlotTypes: false);
 
         /// <summary>
         /// Whether to require all method tokens to be registered.
@@ -376,6 +374,22 @@ namespace Prim.Core
         /// Default: 1000
         /// </summary>
         public int MaxStackDepth { get; set; } = 1000;
+
+        public ValidationOptions()
+        {
+        }
+
+        public ValidationOptions(
+            bool requireRegisteredMethods = true,
+            bool validateSlotCounts = true,
+            bool validateSlotTypes = true,
+            int maxStackDepth = 1000)
+        {
+            RequireRegisteredMethods = requireRegisteredMethods;
+            ValidateSlotCounts = validateSlotCounts;
+            ValidateSlotTypes = validateSlotTypes;
+            MaxStackDepth = maxStackDepth;
+        }
     }
 
     /// <summary>
@@ -419,7 +433,9 @@ namespace Prim.Core
         public override string ToString()
         {
             if (IsValid) return "Validation succeeded";
-            return $"Validation failed: {string.Join("; ", Errors)}";
+            if (Errors.Count == 1)
+                return $"Validation failed: {Errors[0]}";
+            return $"Validation failed ({Errors.Count} errors): {string.Join("; ", Errors)}";
         }
     }
 

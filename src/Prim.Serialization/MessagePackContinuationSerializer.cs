@@ -245,12 +245,12 @@ namespace Prim.Serialization
         {
             if (typeof(T) == typeof(object))
             {
-                return (IMessagePackFormatter<T>)new RestrictedObjectFormatter(_typeRegistry);
+                return (IMessagePackFormatter<T>)(object)new RestrictedObjectFormatter(_typeRegistry);
             }
 
             if (typeof(T) == typeof(object[]))
             {
-                return (IMessagePackFormatter<T>)new RestrictedObjectArrayFormatter(_typeRegistry);
+                return (IMessagePackFormatter<T>)(object)new RestrictedObjectArrayFormatter(_typeRegistry);
             }
 
             return null;

@@ -147,6 +147,12 @@ namespace Prim.Analysis
 
         private int GetVarPop(Instruction instruction)
         {
+            // Handle ret for non-void methods
+            if (instruction.OpCode.Code == Code.Ret)
+            {
+                return _method.ReturnType.FullName != "System.Void" ? 1 : 0;
+            }
+
             // Handle variable pop (mainly calls)
             if (instruction.Operand is MethodReference method)
             {

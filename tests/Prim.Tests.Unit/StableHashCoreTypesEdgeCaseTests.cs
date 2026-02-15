@@ -472,7 +472,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void SuspensionTag_NullName_DefaultsToAnonymous()
         {
-            var tag = new SuspensionTag<int, Unit>(null);
+            var tag = new SuspensionTag<int, Prim.Core.Unit>(null);
 
             Assert.Equal("anonymous", tag.Name);
         }
@@ -526,8 +526,8 @@ namespace Prim.Tests.Unit
         [Fact]
         public void Unit_Value_IsDefault()
         {
-            var a = Unit.Value;
-            var b = Unit.Value;
+            var a = Prim.Core.Unit.Value;
+            var b = Prim.Core.Unit.Value;
 
             Assert.Equal(a, b);
         }
@@ -535,7 +535,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void Unit_ToString_ReturnsParens()
         {
-            Assert.Equal("()", Unit.Value.ToString());
+            Assert.Equal("()", Prim.Core.Unit.Value.ToString());
         }
 
         #endregion

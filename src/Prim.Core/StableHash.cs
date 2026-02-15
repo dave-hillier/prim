@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 
 namespace Prim.Core
 {
@@ -28,9 +29,10 @@ namespace Prim.Core
                 const uint fnvOffsetBasis = 2166136261;
 
                 uint hash = fnvOffsetBasis;
-                foreach (char c in value)
+                byte[] bytes = Encoding.UTF8.GetBytes(value);
+                foreach (byte b in bytes)
                 {
-                    hash ^= c;
+                    hash ^= b;
                     hash *= fnvPrime;
                 }
                 return (int)hash;

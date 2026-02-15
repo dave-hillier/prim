@@ -126,6 +126,9 @@ namespace Prim.Cecil
                 if (suspendExDef != null)
                 {
                     _suspendExceptionType = _module.ImportReference(suspendExDef);
+                    // YieldPointId getter must come from SuspendException since it's called on exLocal
+                    _yieldPointIdField = _module.ImportReference(
+                        suspendExDef.Properties.FirstOrDefault(p => p.Name == "YieldPointId")?.GetMethod);
                 }
 
                 var frameRecordDef = primCore.MainModule.Types.FirstOrDefault(t => t.Name == "HostFrameRecord");
@@ -134,8 +137,6 @@ namespace Prim.Cecil
                     _hostFrameRecordType = _module.ImportReference(frameRecordDef);
                     _methodTokenField = _module.ImportReference(
                         frameRecordDef.Properties.FirstOrDefault(p => p.Name == "MethodToken")?.GetMethod);
-                    _yieldPointIdField = _module.ImportReference(
-                        frameRecordDef.Properties.FirstOrDefault(p => p.Name == "YieldPointId")?.GetMethod);
                     _slotsField = _module.ImportReference(
                         frameRecordDef.Properties.FirstOrDefault(p => p.Name == "Slots")?.GetMethod);
                     _callerField = _module.ImportReference(
@@ -311,28 +312,16 @@ namespace Prim.Cecil
             // Build slots array from locals
             if (_frameCapturePackSlots != null)
             {
-                // Load all locals onto stack
-                foreach (var local in body.Variables.Take(body.Variables.Count - 3)) // Exclude our added locals
-                {
-                    catchInstructions.Add(il.Create(OpCodes.Ldloc, local));
-                    // Box value types
-                    if (local.VariableType.IsValueType)
-                    {
-                        catchInstructions.Add(il.Create(OpCodes.Box, local.VariableType));
-                    }
-                }
-
-                // Create array for PackSlots
-                var localCount = Math.Max(0, body.Variables.Count - 3);
+                // Create array for PackSlots - exclude added locals (context, frame, state, exLocal = 4)
+                var localCount = Math.Max(0, body.Variables.Count - 4);
                 catchInstructions.Add(il.Create(OpCodes.Ldc_I4, localCount));
                 catchInstructions.Add(il.Create(OpCodes.Newarr, _module.TypeSystem.Object));
 
-                // Store locals into array (reverse order since they're on stack)
-                for (int i = localCount - 1; i >= 0; i--)
+                // Store locals into array
+                for (int i = 0; i < localCount; i++)
                 {
                     catchInstructions.Add(il.Create(OpCodes.Dup));
                     catchInstructions.Add(il.Create(OpCodes.Ldc_I4, i));
-                    // Load from stack position
                     catchInstructions.Add(il.Create(OpCodes.Ldloc, body.Variables[i]));
                     if (body.Variables[i].VariableType.IsValueType)
                     {
@@ -539,7 +528,7 @@ namespace Prim.Cecil
                 restoreInstructions.Add(il.Create(OpCodes.Pop));
             }
 
-            // __state = __frame.YieldPointId + 1;
+            // __state = __frame.YieldPointId;
             restoreInstructions.Add(il.Create(OpCodes.Ldloc, frameLocal));
             if (_yieldPointIdField != null)
             {
@@ -550,15 +539,13 @@ namespace Prim.Cecil
                 restoreInstructions.Add(il.Create(OpCodes.Pop));
                 restoreInstructions.Add(il.Create(OpCodes.Ldc_I4_0));
             }
-            restoreInstructions.Add(il.Create(OpCodes.Ldc_I4_1));
-            restoreInstructions.Add(il.Create(OpCodes.Add));
             restoreInstructions.Add(il.Create(OpCodes.Stloc, stateLocal));
 
             // Restore locals from slots (simplified - just restore first few)
             if (_frameCaptureGetSlot != null && _slotsField != null)
             {
                 var originalLocals = _method.Body.Variables.Take(
-                    Math.Max(0, _method.Body.Variables.Count - 4)).ToList();
+                    Math.Max(0, _method.Body.Variables.Count - 5)).ToList();
 
                 for (int i = 0; i < originalLocals.Count; i++)
                 {
@@ -644,7 +631,7 @@ namespace Prim.Cecil
 
             // Insert all at beginning
             var firstInstr = _method.Body.Instructions[0];
-            foreach (var instr in restoreInstructions.AsEnumerable().Reverse())
+            foreach (var instr in restoreInstructions)
             {
                 il.InsertBefore(firstInstr, instr);
             }
