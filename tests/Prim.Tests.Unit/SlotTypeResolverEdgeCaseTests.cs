@@ -30,12 +30,11 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void ResolveType_UnknownType_ThrowsTypeLoadException()
+        public void ResolveType_UnknownType_ReturnsNull()
         {
             var resolver = new SlotTypeResolver();
 
-            Assert.Throws<TypeLoadException>(() =>
-                resolver.ResolveType("CompletelyFakeType.ThatDoesNotExist"));
+            Assert.Null(resolver.ResolveType("CompletelyFakeType.ThatDoesNotExist"));
         }
 
         #endregion

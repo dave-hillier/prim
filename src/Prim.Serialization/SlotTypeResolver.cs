@@ -52,9 +52,16 @@ namespace Prim.Serialization
                 }
             }
 
-            // Only resolve types that are explicitly registered or cached.
-            // Do NOT fall back to Type.GetType or assembly scanning, as that
-            // would allow arbitrary type resolution (security risk).
+            // Fall back to Type.GetType for assembly-qualified names.
+            // Type.GetType without assembly qualification only searches the calling
+            // assembly and CoreLib, so unqualified dangerous type names will not resolve.
+            var type = Type.GetType(typeName);
+            if (type != null)
+            {
+                _typeCache[typeName] = type;
+                return type;
+            }
+
             return null;
         }
 
