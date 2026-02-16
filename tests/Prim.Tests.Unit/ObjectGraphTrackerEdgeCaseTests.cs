@@ -55,16 +55,16 @@ namespace Prim.Tests.Unit
         [Fact]
         public void TryRegister_Null_AlwaysReturnsTrue_WithIdNegativeOne()
         {
-            // Null is always treated as "new" registration with id = -1.
-            // This means calling TryRegister(null) multiple times always returns true,
-            // unlike non-null objects which return false on second registration.
+            // Null is treated as a trackable registration with id = -1.
+            // First registration returns true, subsequent registrations return false
+            // (consistent with non-null behavior).
             var tracker = new ObjectGraphTracker();
 
             Assert.True(tracker.TryRegister(null, out var id1));
             Assert.Equal(-1, id1);
 
-            // Second registration of null also returns true - inconsistent with non-null behavior
-            Assert.True(tracker.TryRegister(null, out var id2));
+            // Second registration of null returns false (already tracked)
+            Assert.False(tracker.TryRegister(null, out var id2));
             Assert.Equal(-1, id2);
         }
 
