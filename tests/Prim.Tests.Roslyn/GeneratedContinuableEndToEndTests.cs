@@ -72,14 +72,12 @@ namespace Prim.Tests.Roslyn
         /// Same cycle as above but with a JSON serialize/deserialize step inserted
         /// between suspend and resume (cross-process migration).
         ///
-        /// SKIPPED: reproduces #40. The JSON serializer widens the captured int slot
-        /// (sum=0) to System.Int64 on the round-trip, so when the generated restore
-        /// block calls FrameCapture.GetSlot&lt;int&gt;(...) it throws
-        /// System.InvalidCastException: Unable to cast object of type 'System.Int64'
-        /// to type 'System.Int32'. The in-memory cycle test above shows the generated
-        /// resume logic itself is correct; only JSON type fidelity is broken.
+        /// Fixed by #40: slots now round-trip through a typed envelope
+        /// (<see cref="Prim.Serialization.SlotEnvelope"/>) so the captured int slot
+        /// (sum=0) is coerced back to System.Int32 on deserialize, and the generated
+        /// restore block's FrameCapture.GetSlot&lt;int&gt;(...) no longer throws.
         /// </summary>
-        [Fact(Skip = "repro of #40 — JSON round-trip widens int slot to Int64, GetSlot<int> throws InvalidCastException on resume")]
+        [Fact]
         public void CountToTen_Generated_FullSuspendSerializeResumeCycle()
         {
             var instance = new SampleContinuableClass();
