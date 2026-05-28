@@ -35,9 +35,9 @@ Prim/
 │   ├── Prim.Core/           # Core types (HostFrameRecord, ContinuationState, etc.)
 │   ├── Prim.Runtime/        # Execution context and runner
 │   ├── Prim.Serialization/  # JSON and MessagePack serializers
-│   ├── Prim.Roslyn/         # Source generator for [Continuable] methods
+│   ├── Prim.Roslyn/         # Source generator for [Continuable] methods (experimental)
 │   ├── Prim.Analysis/       # IL analysis (CFG, stack simulation)
-│   └── Prim.Cecil/          # Bytecode rewriting with Mono.Cecil
+│   └── Prim.Cecil/          # Bytecode rewriting with Mono.Cecil (experimental)
 ├── tests/
 │   ├── Prim.Tests.Unit/
 │   ├── Prim.Tests.Integration/
@@ -50,7 +50,22 @@ Prim/
 
 ## Quick Start
 
-### Basic Yield/Resume
+> **Two paths, different maturity.** The currently working way to make a method
+> continuable is the *manual pattern* shown below: track state in instance fields
+> and hand-write a `catch (SuspendException)` block that captures the frame. This
+> is the path exercised by the tests and the `Generator` sample.
+>
+> Automatic transformation — where you annotate a method with `[Continuable]` and
+> let the Roslyn source generator or the Mono.Cecil bytecode rewriter generate the
+> state machine for you — is **experimental and in progress**. It has known
+> correctness gaps and is not yet wired up end to end, so prefer the manual pattern
+> for working code today. See [Automatic Transformation (Experimental)](#automatic-transformation-experimental).
+
+### Basic Yield/Resume (Manual Pattern)
+
+The example below writes the suspend/capture logic by hand. State that must survive
+a yield lives in instance fields (`Current`), and the `catch` block packs that state
+into a frame record before re-throwing.
 
 ```csharp
 using Prim.Core;
@@ -113,6 +128,25 @@ string json = File.ReadAllText("state.json");
 var state = serializer.DeserializeFromString(json);
 var result = ContinuationRunner.Resume<int>(state);
 ```
+
+### Automatic Transformation (Experimental)
+
+The longer-term goal is to remove the manual boilerplate above. Instead of writing
+the `try`/`catch (SuspendException)` block yourself, you would mark a method with
+`[Continuable]` and have the framework generate the suspend/capture/resume state
+machine — much like the C# compiler does for `async`/`await`.
+
+Two implementations of this transformation exist in the tree:
+
+- **`Prim.Roslyn`** — a Roslyn source generator that rewrites `[Continuable]`
+  methods at compile time.
+- **`Prim.Cecil`** — a Mono.Cecil rewriter that transforms the compiled IL.
+
+Both are **experimental and incomplete**. They are not yet wired into a working
+end-to-end path and have known correctness gaps (for example, not every local
+variable, control-flow shape, or nested call is captured and restored correctly).
+Treat them as research/work-in-progress rather than a supported way to build
+continuable methods. Until they are complete, use the manual pattern shown above.
 
 ## Core Concepts
 
