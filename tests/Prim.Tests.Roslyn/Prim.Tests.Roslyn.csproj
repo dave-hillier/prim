@@ -24,7 +24,17 @@
     <ProjectReference Include="..\..\src\Prim.Core\Prim.Core.csproj" />
     <ProjectReference Include="..\..\src\Prim.Runtime\Prim.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Prim.Serialization\Prim.Serialization.csproj" />
-    <ProjectReference Include="..\..\src\Prim.Roslyn\Prim.Roslyn.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="true" />
+    <ProjectReference Include="..\..\src\Prim.Roslyn\Prim.Roslyn.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!--
+    The analyzer is referenced above as an analyzer-only reference (ReferenceOutputAssembly="false")
+    so the source generator actually runs against this test project (issue #15). The unit tests in
+    this project also exercise the analyzer types directly, so link the analyzer source here to make
+    those types available without leaking the netstandard2.0 assembly as a runtime reference.
+  -->
+  <ItemGroup>
+    <Compile Include="..\..\src\Prim.Roslyn\YieldPointAnalyzer.cs" Link="Analyzer\YieldPointAnalyzer.cs" />
   </ItemGroup>
 
 </Project>

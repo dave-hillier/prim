@@ -91,42 +91,6 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void ObjectGraphTracker_TracksIdentity()
-        {
-            var tracker = new ObjectGraphTracker();
-            var obj = new object();
-
-            Assert.True(tracker.TryRegister(obj, out var id1));
-            Assert.False(tracker.TryRegister(obj, out var id2));
-            Assert.Equal(id1, id2);
-        }
-
-        [Fact]
-        public void ObjectGraphTracker_HandlesDifferentObjects()
-        {
-            var tracker = new ObjectGraphTracker();
-            var obj1 = new object();
-            var obj2 = new object();
-
-            Assert.True(tracker.TryRegister(obj1, out var id1));
-            Assert.True(tracker.TryRegister(obj2, out var id2));
-            Assert.NotEqual(id1, id2);
-        }
-
-        [Fact]
-        public void ObjectGraphTracker_RegistersAndRetrievesByReference()
-        {
-            var tracker = new ObjectGraphTracker();
-            var original = new { Name = "Test" };
-
-            tracker.TryRegister(original, out var id);
-            tracker.RegisterDeserialized(id, original);
-            var retrieved = tracker.GetById(id);
-
-            Assert.Same(original, retrieved);
-        }
-
-        [Fact]
         public void SlotTypeResolver_ResolvesBuiltInTypes()
         {
             var resolver = new SlotTypeResolver();

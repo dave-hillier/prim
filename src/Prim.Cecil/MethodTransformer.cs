@@ -20,6 +20,12 @@ namespace Prim.Cecil
         private readonly YieldPointIdentifier _yieldPointIdentifier;
         private readonly ModuleDefinition _module;
 
+        // Number of locals present in the method before any synthetic locals
+        // (__context, __frame, __state, __ex, __record) are injected. Captured as
+        // the synthetic locals are added so slot-packing/restore accounting stays
+        // order-independent and does not rely on hard-coded offsets.
+        private int _originalLocalCount;
+
         // Cached type/method references
         private TypeReference _scriptContextType;
         private MethodReference _ensureCurrentMethod;
@@ -59,7 +65,10 @@ namespace Prim.Cecil
             var il = _method.Body.GetILProcessor();
             var methodToken = GenerateMethodToken();
 
-            // Step 1: Add local variables we need
+            // Step 1: Add local variables we need.
+            // Record the original local count before injecting any synthetic locals
+            // so later accounting can compute the original-local boundary explicitly.
+            _originalLocalCount = _method.Body.Variables.Count;
             var contextLocal = AddLocal(_scriptContextType, "__context");
             var frameLocal = AddLocal(_hostFrameRecordType, "__frame");
             var stateLocal = AddLocal(_module.TypeSystem.Int32, "__state");
@@ -311,8 +320,8 @@ namespace Prim.Cecil
             // Build slots array from locals
             if (_frameCapturePackSlots != null)
             {
-                // Load all locals onto stack
-                foreach (var local in body.Variables.Take(body.Variables.Count - 3)) // Exclude our added locals
+                // Load all original locals onto stack (exclude synthetic locals)
+                foreach (var local in body.Variables.Take(_originalLocalCount))
                 {
                     catchInstructions.Add(il.Create(OpCodes.Ldloc, local));
                     // Box value types
@@ -323,7 +332,7 @@ namespace Prim.Cecil
                 }
 
                 // Create array for PackSlots
-                var localCount = Math.Max(0, body.Variables.Count - 3);
+                var localCount = Math.Max(0, _originalLocalCount);
                 catchInstructions.Add(il.Create(OpCodes.Ldc_I4, localCount));
                 catchInstructions.Add(il.Create(OpCodes.Newarr, _module.TypeSystem.Object));
 
@@ -558,7 +567,7 @@ namespace Prim.Cecil
             if (_frameCaptureGetSlot != null && _slotsField != null)
             {
                 var originalLocals = _method.Body.Variables.Take(
-                    Math.Max(0, _method.Body.Variables.Count - 4)).ToList();
+                    Math.Max(0, _originalLocalCount)).ToList();
 
                 for (int i = 0; i < originalLocals.Count; i++)
                 {

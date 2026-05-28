@@ -17,7 +17,8 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 ## What's Done
 
 - Core types (HostFrameRecord, ContinuationState, SuspendException)
-- Runtime (ContinuationRunner, ScriptContext, ScriptScheduler)
+- Runtime (ContinuationRunner, ScriptContext)
+- Budget-based preemption (ScriptContext.HandleYieldPointWithBudget / RequestYield)
 - Serialization (JSON and MessagePack with object graph tracking)
 - Analysis (CFG construction, stack simulation, yield point identification)
 - Cecil IL transformation with E2E tests

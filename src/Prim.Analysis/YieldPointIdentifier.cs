@@ -134,6 +134,11 @@ namespace Prim.Analysis
                 {
                     // The yield point is at the back-edge source (the branch instruction)
                     var lastInstruction = from.Instructions[from.Instructions.Count - 1];
+
+                    // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
+                    if (IsInExceptionHandlerRegion(lastInstruction.Offset))
+                        continue;
+
                     yieldPoints.Add(new ILYieldPoint
                     {
                         Id = nextId++,
@@ -155,6 +160,10 @@ namespace Prim.Analysis
                         if (instruction.Operand is MethodReference called &&
                             IsExternalCall(called))
                         {
+                            // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
+                            if (IsInExceptionHandlerRegion(instruction.Offset))
+                                continue;
+
                             yieldPoints.Add(new ILYieldPoint
                             {
                                 Id = nextId++,
@@ -179,6 +188,40 @@ namespace Prim.Analysis
         /// Gets the stack simulator.
         /// </summary>
         public StackSimulator GetStackSimulator() => _stackSim;
+
+        /// <summary>
+        /// Determines whether the given IL offset falls within any exception-handler
+        /// region (try block, catch/handler body, filter, or finally). Yield points
+        /// must not be inserted inside such regions (whitepaper §10.2).
+        /// </summary>
+        private bool IsInExceptionHandlerRegion(int offset)
+        {
+            foreach (var handler in _method.Body.ExceptionHandlers)
+            {
+                // Try block: [TryStart, TryEnd)
+                if (handler.TryStart != null && handler.TryEnd != null &&
+                    offset >= handler.TryStart.Offset && offset < handler.TryEnd.Offset)
+                {
+                    return true;
+                }
+
+                // Handler body (catch/finally/fault): [HandlerStart, HandlerEnd)
+                if (handler.HandlerStart != null && handler.HandlerEnd != null &&
+                    offset >= handler.HandlerStart.Offset && offset < handler.HandlerEnd.Offset)
+                {
+                    return true;
+                }
+
+                // Filter region: [FilterStart, HandlerStart)
+                if (handler.FilterStart != null && handler.HandlerStart != null &&
+                    offset >= handler.FilterStart.Offset && offset < handler.HandlerStart.Offset)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         private bool IsExternalCall(MethodReference method)
         {
