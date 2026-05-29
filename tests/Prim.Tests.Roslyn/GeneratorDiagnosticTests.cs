@@ -134,6 +134,104 @@ namespace TestNs
         }
 
         [Fact]
+        public void YieldInFinally_IsDiagnosedAsErrorAndSkipped()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public int Doit()
+        {
+            int result = 0;
+            try
+            {
+                result = 10;
+            }
+            finally
+            {
+                for (int i = 0; i < 3; i++) { result += i; }
+            }
+            return result;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM003", diag.Id);
+            Assert.Equal(DiagnosticSeverity.Error, diag.Severity);
+            Assert.Contains("finally", diag.GetMessage());
+
+            // No (broken/partial) source was generated for the skipped method.
+            Assert.DoesNotContain(
+                result.GeneratedTrees,
+                t => t.ToString().Contains("Doit_Continuable"));
+        }
+
+        [Fact]
+        public void YieldInLock_IsDiagnosedAsErrorAndSkipped()
+        {
+            var src = Prologue + @"
+        private readonly object _gate = new object();
+
+        [Continuable]
+        public int Doit()
+        {
+            int result = 0;
+            lock (_gate)
+            {
+                for (int i = 0; i < 3; i++) { result += i; }
+            }
+            return result;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM003", diag.Id);
+            Assert.Equal(DiagnosticSeverity.Error, diag.Severity);
+            Assert.Contains("lock", diag.GetMessage());
+            Assert.DoesNotContain(result.GeneratedTrees, t => t.ToString().Contains("Doit_Continuable"));
+        }
+
+        [Fact]
+        public void NestedContinuableCallInFinally_IsDiagnosedAsErrorAndSkipped()
+        {
+            // A continuable CALL (not just a loop) inside a finally must also be caught:
+            // it is a yield point too. Helper() is continuable; calling it in Doit's
+            // finally is illegal.
+            var src = Prologue + @"
+        [Continuable]
+        public int Helper()
+        {
+            int s = 0;
+            for (int i = 0; i < 3; i++) { s += i; }
+            return s;
+        }
+
+        [Continuable]
+        public int Doit()
+        {
+            int result = 0;
+            try { result = 1; }
+            finally { result += Helper(); }
+            return result;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            // Helper itself is fine; only Doit is diagnosed.
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM003", diag.Id);
+            Assert.Contains("finally", diag.GetMessage());
+            Assert.Contains("'Doit'", diag.GetMessage());
+
+            // Helper is still generated; Doit is not.
+            Assert.Contains(result.GeneratedTrees, t => t.ToString().Contains("Helper_Continuable"));
+            Assert.DoesNotContain(result.GeneratedTrees, t => t.ToString().Contains("Doit_Continuable"));
+        }
+
+        [Fact]
         public void SupportedMethod_ProducesNoDiagnostics_AndGeneratesCode()
         {
             var src = Prologue + @"

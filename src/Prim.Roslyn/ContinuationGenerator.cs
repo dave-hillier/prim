@@ -13,9 +13,60 @@ namespace Prim.Roslyn
     /// Source generator that transforms methods marked with [Continuable]
     /// to support suspension, state capture, and resumption.
     ///
-    /// Note: This is a simplified implementation that demonstrates the concept.
-    /// A production implementation would need more sophisticated syntax tree
-    /// transformation to handle all C# constructs.
+    /// RESUME MODEL — REPLAY (read this before changing the emitter):
+    ///
+    /// The generated state machine does NOT linearize control flow with gotos and does
+    /// NOT dispatch on a saved state at resume. Instead it uses a REPLAY model:
+    ///
+    ///  * Hoisted locals are declared at the top and initialised to default.
+    ///  * A restore prologue checks <c>ScriptContext.IsRestoring</c>; if this method's
+    ///    frame is at the head of the frame chain it pops the frame, rehydrates the
+    ///    hoisted locals from the captured slots, and sets
+    ///    <c>__state = frame.YieldPointId + 1</c>.
+    ///  * The original method body then RE-RUNS FROM THE TOP. <c>__state</c> is not used
+    ///    to jump; the body simply executes again over the restored locals. Pure,
+    ///    re-computable control-flow predicates (if-conditions, loop headers) therefore
+    ///    take the same path they took originally, and a nested continuable call is
+    ///    resumed because the inner method's own restore prologue fires (its frame is now
+    ///    at the head of the chain).
+    ///
+    /// SAFE positions (proven by ReplayModelEndToEndTests):
+    ///  * Loop headers (while / for / foreach / do) — re-run from the header against the
+    ///    restored accumulator; the loop variable is loop-scoped and re-created.
+    ///  * A continuable call inside an <c>if</c> branch, inside a loop body, or used as a
+    ///    SUB-EXPRESSION (e.g. <c>int x = Foo() * 2;</c>) — the statement is replayed and
+    ///    the inner call resumes via the frame chain.
+    ///
+    /// LIMITATION — side effects before a yield RE-RUN on resume:
+    ///  * Because the body replays from the top, any OBSERVABLE side effect that executes
+    ///    before the yield point (and is not itself a continuable call that suspends) will
+    ///    execute AGAIN on resume. The model is correct only when such pre-yield work is
+    ///    idempotent / re-computable. Mutations that must not be repeated should occur
+    ///    AFTER the relevant yield point. This is an inherent property of replay, not a
+    ///    bug to be "fixed" by faking a goto rewrite.
+    ///
+    /// FORBIDDEN positions (diagnosed, never emitted — see PRIM003 / #24):
+    ///  * A yield point inside a <c>finally</c> block, a <c>lock</c> statement, or a
+    ///    <c>catch</c> filter cannot be suspended (it would abandon a CLR-managed region)
+    ///    and is reported as an error; the method is skipped.
+    ///
+    /// NOT-YET-MODELLED positions (rely on replay re-running the whole statement):
+    ///  * A continuable call in a loop/if condition (e.g. <c>if (Helper() &gt; 0)</c>) or
+    ///    inside a <c>switch</c> is not assigned its own planned yield point; it round-trips
+    ///    only because the enclosing statement re-runs on replay and the inner frame
+    ///    resumes via the chain. Avoid placing irreversible side effects alongside such
+    ///    calls until per-position resume is modelled.
+    ///
+    /// YIELD-POINT IDs — SINGLE SOURCE OF TRUTH (#22):
+    ///  * <see cref="YieldPointAnalyzer.PlanEmittedYieldPoints"/> produces the canonical
+    ///    ordered set of yield points the emitter turns into HandleYieldPoint /
+    ///    nested-call sites. The emitter consumes those IDs in emission order (it has no
+    ///    independent counter), so the captured frame's YieldPointId, the resume path, and
+    ///    the "{Count} yield point(s)" doc comment all agree.
+    ///
+    /// Note: This is still a simplified implementation. A production implementation would
+    /// need more sophisticated transformation to handle all C# constructs and to capture
+    /// pre-yield side effects without replay.
     /// </summary>
     [Generator]
     public class ContinuationGenerator : IIncrementalGenerator
@@ -36,6 +87,20 @@ namespace Prim.Roslyn
             messageFormat: "[Continuable] method '{0}' is not supported ({1}); no continuation code was generated",
             category: "Prim.Continuation",
             defaultSeverity: DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
+
+        // #24: a yield point (loop, explicit Yield()/CheckYield(), or continuable call)
+        // inside a finally block, lock statement, or catch filter is a hard error.
+        // Suspending out of such a region would abandon a CLR-managed region (the finally
+        // would not complete, the monitor lock would not be released, an exception filter
+        // cannot be re-entered) per whitepaper §10.2. ERROR severity, and the member is
+        // diagnosed-and-skipped (no broken/partial output), consistent with PRIM002.
+        private static readonly DiagnosticDescriptor YieldInForbiddenRegion = new DiagnosticDescriptor(
+            id: "PRIM003",
+            title: "Yield point in unsupported region",
+            messageFormat: "[Continuable] method '{0}' has a yield point inside {1}, which cannot be suspended; no continuation code was generated",
+            category: "Prim.Continuation",
+            defaultSeverity: DiagnosticSeverity.Error,
             isEnabledByDefault: true);
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
@@ -127,7 +192,36 @@ namespace Prim.Roslyn
             foreach (var group in methodsByType)
             {
                 var typeName = group.Key;
-                var source = GenerateTransformedMethods(typeName, group.ToList(), compilation);
+
+                // #24: a yield point inside a finally / lock / catch-filter cannot be
+                // suspended. Diagnose-and-skip those methods (PRIM003, error) before
+                // generation so no broken/partial output is emitted. The continuable
+                // name set is needed so a continuable CALL inside such a region is
+                // recognised as a yield point, not just loops/explicit yields.
+                var continuableNames = new HashSet<string>(group.Select(m => m.Identifier.Text));
+                var emittable = new List<MethodDeclarationSyntax>();
+
+                foreach (var method in group)
+                {
+                    var analyzer = new YieldPointAnalyzer(continuableNames);
+                    var illegal = analyzer.FindIllegalYieldContexts(method);
+                    if (illegal.Count > 0)
+                    {
+                        var first = illegal[0];
+                        context.ReportDiagnostic(Diagnostic.Create(
+                            YieldInForbiddenRegion,
+                            first.Location ?? method.Identifier.GetLocation(),
+                            method.Identifier.Text,
+                            first.RegionDescription));
+                        continue;
+                    }
+                    emittable.Add(method);
+                }
+
+                if (emittable.Count == 0)
+                    continue;
+
+                var source = GenerateTransformedMethods(typeName, emittable, compilation);
                 context.AddSource($"{typeName.Replace(".", "_")}_Continuations.g.cs", SourceText.From(source, Encoding.UTF8));
             }
         }
@@ -343,8 +437,10 @@ namespace Prim.Roslyn
             var methodToken = GenerateMethodToken(method, model);
 
             var hoist = HoistedLocals.Collect(method, model);
-            var analyzer = new YieldPointAnalyzer();
-            var yieldPoints = analyzer.FindYieldPoints(method);
+            // Single source of truth (#22): the emitted yield-point plan drives BOTH the
+            // count comment below and the IDs consumed during emission.
+            var analyzer = new YieldPointAnalyzer(continuableMethodNames);
+            var yieldPoints = analyzer.PlanEmittedYieldPoints(method);
 
             sb.AppendLine();
             sb.AppendLine($"{indent}/// <summary>");
@@ -375,8 +471,8 @@ namespace Prim.Roslyn
             var methodToken = GenerateMethodToken(method, model);
 
             var hoist = HoistedLocals.Collect(method, model);
-            var analyzer = new YieldPointAnalyzer();
-            var yieldPoints = analyzer.FindYieldPoints(method);
+            var analyzer = new YieldPointAnalyzer(continuableMethodNames);
+            var yieldPoints = analyzer.PlanEmittedYieldPoints(method);
 
             var paramList = BuildParameterList(method, model);
             if (!isStatic)
@@ -504,7 +600,7 @@ namespace Prim.Roslyn
 
             var ctx = new BodyGenerationContext
             {
-                YieldPointIndex = 0,
+                NextPlanIndex = 0,
                 TryBlockIndex = 0,
                 TryBlocks = tryBlocks,
                 YieldPoints = yieldPoints,
@@ -658,13 +754,43 @@ namespace Prim.Roslyn
 
         private class BodyGenerationContext
         {
-            public int YieldPointIndex { get; set; }
+            /// <summary>
+            /// Cursor into <see cref="YieldPoints"/> (the analyzer's emission plan). The
+            /// emitter draws the next plan entry's Id as it emits each yield site, instead
+            /// of running an independent counter — this is the #22 unification.
+            /// </summary>
+            public int NextPlanIndex { get; set; }
             public int TryBlockIndex { get; set; }
             public List<TryBlockInfo> TryBlocks { get; set; }
+
+            /// <summary>
+            /// The canonical, ordered emission plan from
+            /// <see cref="YieldPointAnalyzer.PlanEmittedYieldPoints"/>. The emitter must
+            /// walk statements in the same order this was built so that
+            /// <see cref="NextYieldPointId"/> hands back the matching plan entry's Id.
+            /// </summary>
             public List<YieldPointInfo> YieldPoints { get; set; }
             public HashSet<string> ContinuableMethodNames { get; set; }
             public HoistedLocals Hoist { get; set; }
             public SemanticModel Model { get; set; }
+
+            /// <summary>
+            /// Returns the Id of the next planned yield point and advances the cursor.
+            /// Asserts (via clamp) that the emitter never emits more sites than were
+            /// planned; in lockstep traversal the plan Id always equals the cursor index.
+            /// </summary>
+            public int NextYieldPointId(YieldPointKind expectedKind)
+            {
+                if (NextPlanIndex < YieldPoints.Count)
+                {
+                    var point = YieldPoints[NextPlanIndex];
+                    NextPlanIndex++;
+                    return point.Id;
+                }
+                // Should never happen: the plan is built by the same traversal the emitter
+                // uses. Fall back to the cursor index so output stays well-formed.
+                return NextPlanIndex++;
+            }
         }
 
         private static string TransformContinuableMethodCalls(string code, HashSet<string> continuableMethodNames)
@@ -707,9 +833,9 @@ namespace Prim.Roslyn
                 statement is DoStatementSyntax)
             {
                 var loopCost = EstimateStatementCost(statement);
-                sb.AppendLine($"{indent}// Yield point {context.YieldPointIndex} (loop, cost={loopCost})");
-                sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({context.YieldPointIndex}, {loopCost});");
-                context.YieldPointIndex++;
+                var loopYieldId = context.NextYieldPointId(YieldPointKind.LoopBackEdge);
+                sb.AppendLine($"{indent}// Yield point {loopYieldId} (loop, cost={loopCost})");
+                sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({loopYieldId}, {loopCost});");
             }
 
             var nestedCall = FindContinuableMethodCall(statement, context.ContinuableMethodNames);
@@ -832,7 +958,7 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            var yieldPointId = context.YieldPointIndex++;
+            var yieldPointId = context.NextYieldPointId(YieldPointKind.NestedMethodCall);
             var methodName = GetSimpleMethodName(nestedCall);
 
             sb.AppendLine();
@@ -1032,7 +1158,7 @@ namespace Prim.Roslyn
             else if (usingStatement.Expression != null)
             {
                 // using (expr) { }  -- expression-only resource; capture into a temp.
-                var tmp = $"__using{context.TryBlockIndex}_{context.YieldPointIndex}";
+                var tmp = $"__using{context.TryBlockIndex}_{context.NextPlanIndex}";
                 var exprText = RenderWithRenames(usingStatement.Expression, context);
                 sb.AppendLine($"{indent}System.IDisposable {tmp} = {exprText};");
                 disposeNames.Add(tmp);

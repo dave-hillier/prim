@@ -274,7 +274,9 @@ namespace Prim.Tests.Roslyn
         {
             var instance = new SampleContinuableClass();
 
-            // Call the generated method with loop in finally
+            // LoopInFinallyMethod is no longer [Continuable] (a loop in a finally is a
+            // PRIM003 error, asserted in GeneratorDiagnosticTests), so this calls the
+            // plain hand-written method and verifies its ordinary behavior.
             var result = instance.LoopInFinallyMethod();
 
             // result starts at 10, then adds 0+1+2 in finally = 13

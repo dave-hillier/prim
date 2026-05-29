@@ -137,9 +137,13 @@ namespace Prim.Tests.Roslyn
         }
 
         /// <summary>
-        /// A method with loop inside finally block.
+        /// A method with a loop inside a finally block. This shape is NOT continuable:
+        /// a yield point inside a finally cannot be suspended (whitepaper §10.2), so the
+        /// generator reports PRIM003 and skips it. It is intentionally left WITHOUT the
+        /// [Continuable] attribute here so the build stays green; the PRIM003 diagnostic
+        /// is asserted directly via the generator driver in GeneratorDiagnosticTests.
+        /// The plain method is still exercised by LoopInFinallyMethod_GeneratedMethod_Works.
         /// </summary>
-        [Continuable]
         public int LoopInFinallyMethod()
         {
             int result = 0;
@@ -375,6 +379,48 @@ namespace Prim.Tests.Roslyn
                 result = -2;
             }
             return result;
+        }
+
+        #endregion
+
+        #region Batch 6 replay-model coverage (#20 / #21)
+
+        /// <summary>
+        /// A continuable call nested inside an IF block (#20). The replay model re-runs
+        /// the method body from the top on resume; because the if-condition is a pure
+        /// re-computation over restored locals, the same branch is taken on replay and the
+        /// inner call's restore block resumes it. Proves a yield point inside an if works.
+        /// </summary>
+        [Continuable]
+        public int IfNestedCall(bool take)
+        {
+            int result = 0;
+            if (take)
+            {
+                result = InnerSum(5); // 15
+            }
+            else
+            {
+                result = -1;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// A continuable call inside a loop body (#20). On resume the loop is replayed
+        /// from its header against the restored accumulator; the inner call resumes via
+        /// the frame chain. Distinct from NestedCallInLoop only in that the suspend/resume
+        /// round-trip is asserted directly.
+        /// </summary>
+        [Continuable]
+        public int LoopBodyNestedCall()
+        {
+            int total = 0;
+            for (int i = 1; i <= 3; i++)
+            {
+                total += InnerSum(i); // 1 + 3 + 6 = 10
+            }
+            return total;
         }
 
         #endregion
