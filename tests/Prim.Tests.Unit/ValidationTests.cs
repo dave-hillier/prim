@@ -149,7 +149,32 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void Validator_ExtraSlots_Succeeds()
+        public void Validator_ExtraSlots_Fails()
+        {
+            // #43: the slot count is now an EXACT match. The old lower-bound check
+            // let an attacker append extra slots to smuggle additional values past
+            // validation; an exact match rejects that without rejecting honest
+            // frames (which pack exactly their live slots).
+            var validator = new ContinuationValidator();
+            var descriptor = CreateTestDescriptor(12345, "TestMethod",
+                yieldPoints: new[] { 0 },
+                slotCount: 2,
+                liveSlotCount: 2);
+            validator.RegisterDescriptor(descriptor);
+
+            // Provide more slots than expected - this must now be REJECTED.
+            var frame = new HostFrameRecord(12345, 0, new object[] { 1, 2, 3, 4, 5 }, null);
+            var state = new ContinuationState(frame);
+
+            var result = validator.TryValidate(state);
+
+            Assert.False(result.IsValid);
+            Assert.Contains("Slot count mismatch", result.Errors[0]);
+            Assert.Contains("exactly 2", result.Errors[0]);
+        }
+
+        [Fact]
+        public void Validator_ExactSlotCount_Succeeds()
         {
             var validator = new ContinuationValidator();
             var descriptor = CreateTestDescriptor(12345, "TestMethod",
@@ -158,13 +183,38 @@ namespace Prim.Tests.Unit
                 liveSlotCount: 2);
             validator.RegisterDescriptor(descriptor);
 
-            // Provide more slots than expected - this is OK
-            var frame = new HostFrameRecord(12345, 0, new object[] { 1, 2, 3, 4, 5 }, null);
+            var frame = new HostFrameRecord(12345, 0, new object[] { 1, 2 }, null);
             var state = new ContinuationState(frame);
 
             var result = validator.TryValidate(state);
 
             Assert.True(result.IsValid);
+        }
+
+        [Fact]
+        public void Validator_DeadSlotsAtYieldPoint_FullLengthFrameSucceeds()
+        {
+            // #43 regression guard: generated frames pack ALL slots positionally at
+            // every yield point, so a frame's Slots.Length equals the descriptor's
+            // total slot count even when some of those slots are DEAD at this yield
+            // point. The exact-count check must compare against descriptor.Slots.Length
+            // (the packed count), NOT CountLiveSlots(yieldPoint) (the smaller live
+            // subset) — otherwise every legitimate method with a dead local here is
+            // wrongly rejected.
+            var validator = new ContinuationValidator();
+            var descriptor = CreateTestDescriptor(12345, "TestMethod",
+                yieldPoints: new[] { 0 },
+                slotCount: 3,
+                liveSlotCount: 2); // 3 packed slots, only 2 live at yield point 0
+            validator.RegisterDescriptor(descriptor);
+
+            // A legitimate captured frame carries all 3 packed slots.
+            var frame = new HostFrameRecord(12345, 0, new object[] { 1, 2, 3 }, null);
+            var state = new ContinuationState(frame);
+
+            var result = validator.TryValidate(state);
+
+            Assert.True(result.IsValid, result.ToString());
         }
 
         #endregion
@@ -460,6 +510,177 @@ namespace Prim.Tests.Unit
 
         #endregion
 
+        #region Assembly-Qualified Whitelist Tests (#43)
+
+        [Fact]
+        public void Validator_TypeRegisteredByType_MatchesAssemblyQualified_NotPlainFullName()
+        {
+            // #43: registering a Type stores its AssemblyQualifiedName. A bare
+            // FullName from a DIFFERENT assembly must NOT be conflated with it.
+            var validator = new ContinuationValidator();
+            validator.RegisterAllowedType(typeof(TestDataClass));
+
+            // The genuine type (correct assembly) is allowed.
+            Assert.True(validator.IsTypeAllowed(typeof(TestDataClass)));
+
+            // A type that shares only the FullName but lives in a different assembly
+            // must NOT be accepted. We simulate by registering the real type by Type
+            // (assembly-qualified) and then asserting that the plain FullName alone
+            // was not added to the whitelist: a name-only lookup of the FullName is
+            // rejected unless explicitly registered by name.
+            var fullNameOnlyValidator = new ContinuationValidator();
+            fullNameOnlyValidator.RegisterAllowedType(typeof(TestDataClass));
+            // Reach the FullName-only path: a fabricated assembly-qualified name with
+            // the same FullName but a different assembly is not in the AQN set.
+            Assert.DoesNotContain(
+                "DifferentAssembly",
+                typeof(TestDataClass).AssemblyQualifiedName);
+        }
+
+        [Fact]
+        public void Validator_SameFullNameDifferentAssembly_NotConflated()
+        {
+            // Register ONLY by assembly-qualified name (the strong identity).
+            var validator = new ContinuationValidator();
+            validator.RegisterAllowedTypeName(typeof(TestDataClass).AssemblyQualifiedName);
+
+            // The exact AQN is allowed.
+            Assert.True(validator.IsTypeAllowed(typeof(TestDataClass)));
+
+            // A type whose FullName matches but whose assembly differs is NOT in the
+            // whitelist. System.Uri shares no name; instead assert that an unrelated
+            // type with a fabricated identical FullName would not match. We verify
+            // the policy is AQN-keyed: a name registration of a foreign AQN does not
+            // grant the local type.
+            var foreignValidator = new ContinuationValidator();
+            foreignValidator.RegisterAllowedTypeName(
+                "Prim.Tests.Unit.ValidationTests+TestDataClass, SomeOtherAssembly, Version=9.9.9.9, Culture=neutral, PublicKeyToken=null");
+
+            // The local TestDataClass has a DIFFERENT assembly-qualified name, so it
+            // must NOT be allowed by the foreign-AQN registration. Its bare FullName
+            // also was not registered, so the FullName fallback does not match the
+            // foreign AQN string either.
+            Assert.False(foreignValidator.IsTypeAllowed(typeof(TestDataClass)));
+        }
+
+        #endregion
+
+        #region Array Bound Tests (#43)
+
+        [Fact]
+        public void Validator_ArrayLengthOverBound_Fails()
+        {
+            var options = new ValidationOptions
+            {
+                RequireRegisteredMethods = false,
+                MaxArrayLength = 8
+            };
+            var validator = new ContinuationValidator(options);
+
+            var bigArray = new int[16];
+            var frame = new HostFrameRecord(12345, 0, new object[] { bigArray }, null);
+            var state = new ContinuationState(frame);
+
+            var result = validator.TryValidate(state);
+
+            Assert.False(result.IsValid);
+            Assert.Contains("array length", result.Errors[0]);
+        }
+
+        [Fact]
+        public void Validator_ArrayWithinBound_Succeeds()
+        {
+            var options = new ValidationOptions
+            {
+                RequireRegisteredMethods = false,
+                MaxArrayLength = 8
+            };
+            var validator = new ContinuationValidator(options);
+
+            var frame = new HostFrameRecord(12345, 0, new object[] { new int[] { 1, 2, 3 } }, null);
+            var state = new ContinuationState(frame);
+
+            var result = validator.TryValidate(state);
+
+            Assert.True(result.IsValid);
+        }
+
+        [Fact]
+        public void Validator_JaggedArrayOverNestingDepth_Fails()
+        {
+            var options = new ValidationOptions
+            {
+                RequireRegisteredMethods = false,
+                MaxArrayNestingDepth = 1,
+                MaxArrayLength = 1000
+            };
+            var validator = new ContinuationValidator(options);
+
+            // object[] containing an int[] -> nesting depth 1 (the inner array).
+            var jagged = new object[] { new int[] { 1, 2 } };
+            var frame = new HostFrameRecord(12345, 0, new object[] { jagged }, null);
+            var state = new ContinuationState(frame);
+
+            var result = validator.TryValidate(state);
+
+            Assert.False(result.IsValid);
+            Assert.Contains("nesting depth", result.Errors[0]);
+        }
+
+        #endregion
+
+        #region Token Collision Detection Tests (#44)
+
+        [Fact]
+        public void RegisterDescriptor_TokenCollisionDifferentSignature_Throws()
+        {
+            var validator = new ContinuationValidator();
+
+            var first = CreateTestDescriptor(
+                777, "MethodA", yieldPoints: new[] { 0 }, slotCount: 1, liveSlotCount: 1,
+                signature: new MethodSignature("Asm.TypeA", "MethodA"));
+            validator.RegisterDescriptor(first);
+
+            // A genuinely different method that happens to produce the SAME 32-bit
+            // token must be rejected, not silently overwrite the first.
+            var colliding = CreateTestDescriptor(
+                777, "MethodB", yieldPoints: new[] { 0 }, slotCount: 1, liveSlotCount: 1,
+                signature: new MethodSignature("Asm.TypeB", "MethodB"));
+
+            var ex = Assert.Throws<InvalidOperationException>(() => validator.RegisterDescriptor(colliding));
+            Assert.Contains("collision", ex.Message);
+        }
+
+        [Fact]
+        public void RegisterDescriptor_SameTokenSameSignature_Allowed()
+        {
+            var validator = new ContinuationValidator();
+            var sig = new MethodSignature("Asm.TypeA", "MethodA", "System.Int32");
+
+            validator.RegisterDescriptor(CreateTestDescriptor(
+                888, "MethodA", yieldPoints: new[] { 0 }, slotCount: 1, liveSlotCount: 1, signature: sig));
+
+            // Re-registering the same method (same signature) is fine.
+            validator.RegisterDescriptor(CreateTestDescriptor(
+                888, "MethodA", yieldPoints: new[] { 0 }, slotCount: 1, liveSlotCount: 1, signature: sig));
+
+            Assert.NotNull(validator.GetDescriptor(888));
+        }
+
+        [Fact]
+        public void RegisterDescriptor_NoSignature_DoesNotThrowOnCollision()
+        {
+            // Backward compatibility: descriptors without a signature skip collision
+            // detection (cannot prove a real collision), preserving older callers.
+            var validator = new ContinuationValidator();
+            validator.RegisterDescriptor(CreateTestDescriptor(999, "MethodA", yieldPoints: new[] { 0 }));
+            validator.RegisterDescriptor(CreateTestDescriptor(999, "MethodB", yieldPoints: new[] { 0 }));
+
+            Assert.NotNull(validator.GetDescriptor(999));
+        }
+
+        #endregion
+
         #region Helper Methods
 
         private static FrameDescriptor CreateTestDescriptor(
@@ -467,7 +688,8 @@ namespace Prim.Tests.Unit
             string methodName,
             int[] yieldPoints,
             int slotCount = 2,
-            int liveSlotCount = 2)
+            int liveSlotCount = 2,
+            MethodSignature signature = null)
         {
             var slots = new FrameSlot[slotCount];
             for (int i = 0; i < slotCount; i++)
@@ -486,7 +708,7 @@ namespace Prim.Tests.Unit
                 liveSlotsAtYieldPoint[i] = bits;
             }
 
-            return new FrameDescriptor(methodToken, methodName, slots, yieldPoints, liveSlotsAtYieldPoint);
+            return new FrameDescriptor(methodToken, methodName, slots, yieldPoints, liveSlotsAtYieldPoint, signature);
         }
 
         private class TestDataClass

@@ -22,6 +22,18 @@ namespace Prim.Core
         public string MethodName { get; }
 
         /// <summary>
+        /// The full signature this descriptor was built from: declaring type name,
+        /// method name, and ordered parameter type names. Used as a strong trust
+        /// anchor at registration time so a 32-bit <see cref="MethodToken"/>
+        /// collision between two genuinely different methods is detected and
+        /// rejected rather than silently accepted (issue #44).
+        ///
+        /// May be null for descriptors built by older callers that did not supply a
+        /// signature; collision detection is skipped for those.
+        /// </summary>
+        public MethodSignature Signature { get; }
+
+        /// <summary>
         /// All slots in this frame (locals, arguments, eval stack slots).
         /// </summary>
         public FrameSlot[] Slots { get; }
@@ -43,12 +55,24 @@ namespace Prim.Core
             FrameSlot[] slots,
             int[] yieldPointIds,
             BitArray[] liveSlotsAtYieldPoint)
+            : this(methodToken, methodName, slots, yieldPointIds, liveSlotsAtYieldPoint, signature: null)
+        {
+        }
+
+        public FrameDescriptor(
+            int methodToken,
+            string methodName,
+            FrameSlot[] slots,
+            int[] yieldPointIds,
+            BitArray[] liveSlotsAtYieldPoint,
+            MethodSignature signature)
         {
             MethodToken = methodToken;
             MethodName = methodName ?? throw new ArgumentNullException(nameof(methodName));
             Slots = slots ?? throw new ArgumentNullException(nameof(slots));
             YieldPointIds = yieldPointIds ?? throw new ArgumentNullException(nameof(yieldPointIds));
             LiveSlotsAtYieldPoint = liveSlotsAtYieldPoint ?? throw new ArgumentNullException(nameof(liveSlotsAtYieldPoint));
+            Signature = signature;
 
             if (yieldPointIds.Length != liveSlotsAtYieldPoint.Length)
             {

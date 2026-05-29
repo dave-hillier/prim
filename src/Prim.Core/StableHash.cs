@@ -20,12 +20,25 @@ namespace Prim.Core
         /// <returns>A 32-bit hash code.</returns>
         public static int ComputeFnv1a(string value)
         {
-            if (value == null) return 0;
-
             unchecked
             {
                 const uint fnvPrime = 16777619;
                 const uint fnvOffsetBasis = 2166136261;
+
+                if (value == null)
+                {
+                    // Give null a DISTINCT, reserved hash so it cannot collide with
+                    // the empty string (which hashes to the bare offset basis) or any
+                    // real input. Previously null returned 0, which collided with both
+                    // the empty string under some Combine paths and weakened the token
+                    // signature (issue #44). We fold a reserved sentinel into the FNV
+                    // state so null != "" while leaving all non-null outputs
+                    // byte-identical to before.
+                    uint nullHash = fnvOffsetBasis;
+                    nullHash ^= 0xFFFF; // reserved marker, never produced by a char scan
+                    nullHash *= fnvPrime;
+                    return (int)nullHash;
+                }
 
                 uint hash = fnvOffsetBasis;
                 foreach (char c in value)

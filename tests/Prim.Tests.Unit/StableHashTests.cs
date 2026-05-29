@@ -6,10 +6,23 @@ namespace Prim.Tests.Unit
     public class StableHashTests
     {
         [Fact]
-        public void ComputeFnv1a_NullString_ReturnsZero()
+        public void ComputeFnv1a_NullString_HasDistinctSentinel_NotZero()
         {
-            var hash = StableHash.ComputeFnv1a(null);
-            Assert.Equal(0, hash);
+            // #44: null previously hashed to 0, colliding with the empty string in
+            // Combine paths and weakening the method-token signature. Null now has a
+            // distinct reserved sentinel hash.
+            var nullHash = StableHash.ComputeFnv1a(null);
+            Assert.NotEqual(0, nullHash);
+        }
+
+        [Fact]
+        public void ComputeFnv1a_NullString_DiffersFromEmptyString()
+        {
+            // #44: null and the empty string must hash differently so a null
+            // type/parameter name is not conflated with an empty one.
+            var nullHash = StableHash.ComputeFnv1a(null);
+            var emptyHash = StableHash.ComputeFnv1a("");
+            Assert.NotEqual(nullHash, emptyHash);
         }
 
         [Fact]

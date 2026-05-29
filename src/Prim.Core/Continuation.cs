@@ -65,10 +65,31 @@ namespace Prim.Core
         /// </summary>
         public static Continuation<T> Deserialize(byte[] data, IContinuationSerializer serializer)
         {
+            return Deserialize(data, serializer, validator: null);
+        }
+
+        /// <summary>
+        /// Deserialize a continuation from bytes, optionally validating the
+        /// deserialized state before returning.
+        ///
+        /// SECURITY: when <paramref name="data"/> is untrusted, pass a configured
+        /// <paramref name="validator"/> (or validate at resume time via
+        /// ContinuationRunner.Validator). Deserializing and resuming attacker-
+        /// supplied state without validation is a full takeover primitive.
+        /// </summary>
+        /// <exception cref="ValidationException">
+        /// If <paramref name="validator"/> is supplied and validation fails.
+        /// </exception>
+        public static Continuation<T> Deserialize(
+            byte[] data,
+            IContinuationSerializer serializer,
+            ContinuationValidator validator)
+        {
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (serializer == null) throw new ArgumentNullException(nameof(serializer));
 
             var state = serializer.Deserialize(data);
+            validator?.Validate(state);
             return new Continuation<T>(state, serializer);
         }
 

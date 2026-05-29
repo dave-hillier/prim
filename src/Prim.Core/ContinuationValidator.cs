@@ -21,7 +21,19 @@ namespace Prim.Core
     {
         private readonly Dictionary<int, FrameDescriptor> _descriptors = new Dictionary<int, FrameDescriptor>();
         private readonly HashSet<Type> _allowedTypes = new HashSet<Type>();
-        private readonly HashSet<string> _allowedTypeNames = new HashSet<string>();
+
+        // Assembly-qualified type identity. Matching on FullName alone conflates two
+        // assemblies that share a FullName, letting a forged type in a different
+        // assembly impersonate an allowed one (issue #43). The primary whitelist is
+        // therefore keyed on AssemblyQualifiedName.
+        private readonly HashSet<string> _allowedAssemblyQualifiedNames = new HashSet<string>(StringComparer.Ordinal);
+
+        // Secondary, weaker whitelist for types registered by FullName only (via
+        // RegisterAllowedTypeName) when the concrete Type / assembly is not known at
+        // registration time. Kept separate so it cannot silently widen the
+        // assembly-qualified path.
+        private readonly HashSet<string> _allowedFullNames = new HashSet<string>(StringComparer.Ordinal);
+
         private readonly ValidationOptions _options;
 
         /// <summary>
@@ -65,6 +77,26 @@ namespace Prim.Core
         public void RegisterDescriptor(FrameDescriptor descriptor)
         {
             if (descriptor == null) throw new ArgumentNullException(nameof(descriptor));
+
+            // #44: a 32-bit method token is only an FNV-1a hash, so two genuinely
+            // different methods can collide. If a descriptor is already registered
+            // under this token and its signature differs, this is either a real
+            // collision or a forgery attempt that crafts a (type, method, params)
+            // tuple colliding with a registered method to resume into it. Turn the
+            // silent overwrite into a loud registration error so the collision is
+            // surfaced at startup, not exploited at resume time.
+            if (_descriptors.TryGetValue(descriptor.MethodToken, out var existing)
+                && existing.Signature != null
+                && descriptor.Signature != null
+                && !existing.Signature.Equals(descriptor.Signature))
+            {
+                throw new InvalidOperationException(
+                    $"Method token {descriptor.MethodToken} collision: a descriptor for " +
+                    $"'{existing.Signature}' is already registered, but a different method " +
+                    $"'{descriptor.Signature}' produced the same 32-bit token. " +
+                    "Refusing to register to prevent resuming into the wrong method.");
+            }
+
             _descriptors[descriptor.MethodToken] = descriptor;
         }
 
@@ -87,7 +119,12 @@ namespace Prim.Core
         {
             if (type == null) throw new ArgumentNullException(nameof(type));
             _allowedTypes.Add(type);
-            _allowedTypeNames.Add(type.FullName ?? type.Name);
+            // Identity is the assembly-qualified name so two assemblies sharing a
+            // FullName are NOT conflated (issue #43).
+            if (type.AssemblyQualifiedName != null)
+            {
+                _allowedAssemblyQualifiedNames.Add(type.AssemblyQualifiedName);
+            }
         }
 
         /// <summary>
@@ -97,7 +134,12 @@ namespace Prim.Core
         public void RegisterAllowedTypeName(string typeName)
         {
             if (string.IsNullOrEmpty(typeName)) throw new ArgumentNullException(nameof(typeName));
-            _allowedTypeNames.Add(typeName);
+            // A name-only registration may be an assembly-qualified name or a bare
+            // FullName. Store it in both buckets so either form of supplied name can
+            // match, while keeping Type-based registrations strictly
+            // assembly-qualified.
+            _allowedAssemblyQualifiedNames.Add(typeName);
+            _allowedFullNames.Add(typeName);
         }
 
         /// <summary>
@@ -125,22 +167,49 @@ namespace Prim.Core
         /// </summary>
         public bool IsTypeAllowed(Type type)
         {
+            return IsTypeAllowed(type, depth: 0);
+        }
+
+        private bool IsTypeAllowed(Type type, int depth)
+        {
             if (type == null) return true; // null values are allowed
             if (type.IsPrimitive) return true;
             if (type.IsEnum) return true;
+            // object is a legitimate container/element type (e.g. object[] slots).
+            // Each actual element's runtime type is still whitelist-checked when the
+            // slot value is validated, so allowing the object container is safe.
+            if (type == typeof(object)) return true;
             if (_allowedTypes.Contains(type)) return true;
-            if (_allowedTypeNames.Contains(type.FullName ?? type.Name)) return true;
 
-            // Check if it's an array of allowed type
-            if (type.IsArray)
+            // Assembly-qualified match is the primary, unambiguous identity (#43).
+            if (type.AssemblyQualifiedName != null
+                && _allowedAssemblyQualifiedNames.Contains(type.AssemblyQualifiedName))
             {
-                return IsTypeAllowed(type.GetElementType());
+                return true;
             }
 
-            // Check if it's a nullable of allowed type
+            // Fall back to the weaker FullName match only for types explicitly
+            // registered by name (RegisterAllowedTypeName).
+            var fullName = type.FullName ?? type.Name;
+            if (_allowedFullNames.Contains(fullName)) return true;
+
+            // Bound the nesting depth so a maliciously deep array-of-array-of...
+            // type (or generic recursion) cannot drive unbounded recursion (#43).
+            if (depth >= _options.MaxArrayNestingDepth)
+            {
+                return false;
+            }
+
+            // Check if it's an array of allowed type.
+            if (type.IsArray)
+            {
+                return IsTypeAllowed(type.GetElementType(), depth + 1);
+            }
+
+            // Check if it's a nullable of allowed type.
             if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Nullable<>))
             {
-                return IsTypeAllowed(Nullable.GetUnderlyingType(type));
+                return IsTypeAllowed(Nullable.GetUnderlyingType(type), depth + 1);
             }
 
             return false;
@@ -230,25 +299,40 @@ namespace Prim.Core
                           $"Valid IDs: [{string.Join(", ", descriptor.YieldPointIds)}]");
             }
 
-            // 3. Slot count validation
+            // 3. Slot count validation (EXACT match, issue #43).
+            //
+            // The old check only enforced a lower bound (actual >= expected), so an
+            // attacker could append extra slots to smuggle additional values past
+            // validation. The generated frame layout packs ALL of the method's slots
+            // positionally at every yield point (slots dead at a given point still
+            // occupy their index), so the captured slot array length must match the
+            // descriptor's total declared slot count exactly: not fewer (missing
+            // state) and not more (smuggled state). NB: this is descriptor.Slots.Length,
+            // NOT CountLiveSlots(yieldPoint) — the live-bit subset is generally smaller
+            // than the packed array, so checking against it would reject any legitimate
+            // frame that has a dead slot at this yield point.
             if (_options.ValidateSlotCounts)
             {
                 var yieldPointIndex = Array.IndexOf(descriptor.YieldPointIds, frame.YieldPointId);
                 if (yieldPointIndex >= 0)
                 {
-                    var expectedSlotCount = descriptor.CountLiveSlots(frame.YieldPointId);
+                    var expectedSlotCount = descriptor.Slots.Length;
                     var actualSlotCount = frame.Slots?.Length ?? 0;
 
-                    // Allow some flexibility - actual can be >= expected (extra slots are ignored)
-                    // but should not be less
-                    if (actualSlotCount < expectedSlotCount)
+                    if (actualSlotCount != expectedSlotCount)
                     {
-                        errors.Add($"{prefix}: Slot count mismatch. Expected at least {expectedSlotCount}, got {actualSlotCount}");
+                        errors.Add($"{prefix}: Slot count mismatch. Expected exactly {expectedSlotCount}, got {actualSlotCount}");
                     }
                 }
             }
 
-            // 4. Slot type validation
+            // 4. Slot type validation.
+            //
+            // Validate EVERY provided slot index, not only the descriptor-live ones,
+            // so a dead/extra index cannot escape structural validation (#43). With
+            // the exact-count check above this is the full live set, but we still
+            // iterate the whole array defensively. Where a declared type exists for
+            // an index we additionally enforce type compatibility.
             if (_options.ValidateSlotTypes && frame.Slots != null)
             {
                 var liveSlots = descriptor.YieldPointIds.Contains(frame.YieldPointId)
@@ -269,8 +353,11 @@ namespace Prim.Core
                         continue;
                     }
 
+                    // Bound array values by length and nesting depth (#43).
+                    ValidateSlotValueBounds(slotValue, $"{prefix}: Slot[{i}]", errors, depth: 0);
+
                     // Check type compatibility with declared slot type (if available)
-                    if (liveSlots != null && i < descriptor.Slots.Length && liveSlots[i])
+                    if (liveSlots != null && i < descriptor.Slots.Length && i < liveSlots.Length && liveSlots[i])
                     {
                         var declaredType = descriptor.Slots[i].Type;
                         if (!IsTypeCompatible(slotType, declaredType))
@@ -278,6 +365,52 @@ namespace Prim.Core
                             errors.Add($"{prefix}: Slot[{i}] type mismatch. Expected '{declaredType.Name}', got '{slotType.Name}'");
                         }
                     }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Enforces the configured array length and nesting-depth bounds on a slot
+        /// value that is (or contains) arrays. A deserialized slot can carry a
+        /// jagged or huge array crafted to exhaust memory; bounding both dimensions
+        /// turns that into a clean validation failure (issue #43).
+        /// </summary>
+        private void ValidateSlotValueBounds(object value, string prefix, List<string> errors, int depth)
+        {
+            if (value == null) return;
+            if (value is not Array array) return;
+
+            if (depth >= _options.MaxArrayNestingDepth)
+            {
+                errors.Add($"{prefix}: array nesting depth exceeds maximum allowed ({_options.MaxArrayNestingDepth})");
+                return;
+            }
+
+            if (array.Length > _options.MaxArrayLength)
+            {
+                errors.Add($"{prefix}: array length {array.Length} exceeds maximum allowed ({_options.MaxArrayLength})");
+                return;
+            }
+
+            // Walk elements: whitelist-check each non-null element's runtime type
+            // (closing the array-element gap) and recurse into nested arrays to
+            // enforce the nesting-depth bound (#43).
+            var elementType = array.GetType().GetElementType();
+            var elementsMayBeArrays = elementType != null && (elementType.IsArray || elementType == typeof(object));
+
+            if (!elementsMayBeArrays) return; // scalar element array: nothing deeper to bound
+
+            foreach (var element in array)
+            {
+                if (element == null) continue;
+
+                if (element is Array)
+                {
+                    ValidateSlotValueBounds(element, prefix, errors, depth + 1);
+                }
+                else if (!IsTypeAllowed(element.GetType()))
+                {
+                    errors.Add($"{prefix}: array element of type '{element.GetType().FullName}' is not in the allowed type list");
                 }
             }
         }
@@ -304,7 +437,10 @@ namespace Prim.Core
                     if (!IsTypeAllowed(slotType))
                     {
                         errors.Add($"{prefix}: Slot[{i}] contains type '{slotType.FullName}' which is not in the allowed type list");
+                        continue;
                     }
+
+                    ValidateSlotValueBounds(slotValue, $"{prefix}: Slot[{i}]", errors, depth: 0);
                 }
             }
         }
@@ -372,6 +508,23 @@ namespace Prim.Core
         /// Default: 1000
         /// </summary>
         public int MaxStackDepth { get; set; } = 1000;
+
+        /// <summary>
+        /// Maximum allowed length of an array slot value. A deserialized continuation
+        /// can carry an attacker-sized array; bounding the length prevents a memory
+        /// exhaustion DoS via a single slot (issue #43).
+        /// Default: 1,000,000
+        /// </summary>
+        public int MaxArrayLength { get; set; } = 1_000_000;
+
+        /// <summary>
+        /// Maximum allowed nesting depth for array (or array-of-array) slot values
+        /// and for array/nullable type whitelist recursion. Bounds both the type
+        /// whitelist recursion and the runtime array-value recursion so a crafted
+        /// jagged array cannot drive unbounded recursion (issue #43).
+        /// Default: 16
+        /// </summary>
+        public int MaxArrayNestingDepth { get; set; } = 16;
     }
 
     /// <summary>

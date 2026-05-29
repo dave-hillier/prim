@@ -13,6 +13,26 @@ namespace Prim.Serialization
     {
         private readonly MessagePackSerializerOptions _options;
         private readonly SlotCodec _codec;
+        private readonly SlotTypeResolver _resolver;
+
+        /// <summary>
+        /// Optional validator. When set it does two things on <see cref="Deserialize"/>:
+        ///
+        /// 1. Drives WHITELIST-DRIVEN slot-value revival (issue #41). With the
+        ///    contractless resolver an object-typed slot value revives a custom
+        ///    reference type as a Dictionary. Using the envelope's recorded TypeName,
+        ///    the value is re-materialized into that concrete CLR type ONLY when the
+        ///    type is allowed by this validator's policy. A disallowed type is left
+        ///    un-revived and then rejected by step 2, so an attacker cannot use the
+        ///    revival to instantiate an arbitrary shape.
+        ///
+        /// 2. Runs <see cref="Prim.Core.ContinuationValidator.Validate"/> on the
+        ///    final state before returning, so a disallowed type / malformed frame
+        ///    throws instead of being handed back.
+        ///
+        /// Leave null for trusted/round-trip scenarios.
+        /// </summary>
+        public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public MessagePackContinuationSerializer()
             : this(new SlotTypeResolver())
@@ -22,6 +42,7 @@ namespace Prim.Serialization
         public MessagePackContinuationSerializer(SlotTypeResolver resolver)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            _resolver = resolver;
             _codec = new SlotCodec(resolver);
 
             // Use contractless resolver to serialize any object
@@ -47,6 +68,7 @@ namespace Prim.Serialization
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            _resolver = resolver;
             _codec = new SlotCodec(resolver);
         }
 
@@ -65,7 +87,9 @@ namespace Prim.Serialization
             if (data == null) throw new ArgumentNullException(nameof(data));
 
             var dto = MessagePackSerializer.Deserialize<ContinuationStateDto>(data, _options);
-            return ConvertFromDto(dto);
+            var state = ConvertFromDto(dto);
+            Validator?.Validate(state);
+            return state;
         }
 
         private ContinuationStateDto ConvertToDto(ContinuationState state)
@@ -150,12 +174,88 @@ namespace Prim.Serialization
                 {
                     MethodToken = d.MethodToken,
                     YieldPointId = d.YieldPointId,
-                    Slots = _codec.Decode(d.Slots),
+                    Slots = DecodeSlots(d.Slots),
                     Caller = caller
                 };
             }
 
             return caller;
+        }
+
+        /// <summary>
+        /// Decodes slot envelopes, applying WHITELIST-DRIVEN typed revival for
+        /// reference-type slots (issue #41). The contractless resolver revives an
+        /// object-typed custom reference type as a Dictionary; using the envelope's
+        /// recorded TypeName we re-materialize it into the concrete CLR type, but
+        /// ONLY when that type is permitted by the validator's allowed-type policy.
+        /// A disallowed type is left as-is (a Dictionary) and is then rejected by
+        /// the validator that runs after deserialization, so revival cannot be used
+        /// to instantiate an arbitrary type.
+        /// </summary>
+        private object[] DecodeSlots(SlotEnvelope[] envelopes)
+        {
+            var decoded = _codec.Decode(envelopes);
+            if (decoded == null || envelopes == null) return decoded;
+
+            for (var i = 0; i < envelopes.Length && i < decoded.Length; i++)
+            {
+                decoded[i] = ReviveReferenceType(envelopes[i], decoded[i]);
+            }
+
+            return decoded;
+        }
+
+        private object ReviveReferenceType(SlotEnvelope envelope, object decodedValue)
+        {
+            if (envelope == null || decodedValue == null) return decodedValue;
+            if (string.IsNullOrEmpty(envelope.TypeName)) return decodedValue;
+
+            Type targetType;
+            try
+            {
+                targetType = _resolver.ResolveType(envelope.TypeName);
+            }
+            catch (TypeLoadException)
+            {
+                // Unknown type name: leave the value un-revived. If a validator is
+                // configured it will reject the resulting shape.
+                return decodedValue;
+            }
+
+            if (targetType == null) return decodedValue;
+
+            // Already the right type (SlotCodec coerced primitives/arrays, or JSON-
+            // style metadata revived it). Nothing to do.
+            if (targetType.IsInstanceOfType(decodedValue)) return decodedValue;
+
+            // Only re-materialize custom reference types here; value/array/string
+            // are handled by SlotCodec.Coerce.
+            if (targetType.IsValueType || targetType == typeof(string) || targetType.IsArray)
+            {
+                return decodedValue;
+            }
+
+            // WHITELIST GATE: only instantiate a type the policy allows. Without an
+            // allowed-type policy we refuse to re-materialize, leaving the safe
+            // (Dictionary) shape for the validator to reject.
+            if (Validator == null || !Validator.IsTypeAllowed(targetType))
+            {
+                return decodedValue;
+            }
+
+            // Re-serialize the loosely-revived value (a Dictionary) and deserialize
+            // it into the concrete whitelisted type. This recovers reference-type
+            // fidelity without enabling the typeless gadget resolver.
+            try
+            {
+                var bytes = MessagePackSerializer.Serialize(decodedValue, _options);
+                return MessagePackSerializer.Deserialize(targetType, bytes, _options);
+            }
+            catch (Exception)
+            {
+                // Shape did not match the target; leave it for the validator.
+                return decodedValue;
+            }
         }
     }
 

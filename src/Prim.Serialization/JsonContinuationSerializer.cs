@@ -14,6 +14,19 @@ namespace Prim.Serialization
         private readonly JsonSerializerSettings _settings;
         private readonly SlotCodec _codec;
 
+        /// <summary>
+        /// Optional validator run on every <see cref="Deserialize"/> /
+        /// <see cref="DeserializeFromString"/> call BEFORE the state is returned.
+        /// When set, a state that fails validation throws
+        /// <see cref="Prim.Core.ValidationException"/> instead of being handed back
+        /// to the caller. Leave null for trusted/round-trip scenarios.
+        ///
+        /// SECURITY: deserializing attacker-supplied continuation state and resuming
+        /// it is a full takeover primitive. Set this validator (or validate at
+        /// resume via ContinuationRunner.Validator) whenever the bytes are untrusted.
+        /// </summary>
+        public Prim.Core.ContinuationValidator Validator { get; set; }
+
         public JsonContinuationSerializer()
             : this(new SlotTypeResolver())
         {
@@ -128,7 +141,9 @@ namespace Prim.Serialization
             ValidateJsonDepth(json);
 
             var dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
-            return ConvertFromDto(dto);
+            var state = ConvertFromDto(dto);
+            Validator?.Validate(state);
+            return state;
         }
 
         private void ValidateJsonDepth(string json)

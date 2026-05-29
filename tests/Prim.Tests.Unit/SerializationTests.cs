@@ -410,7 +410,12 @@ namespace Prim.Tests.Unit
         // supported path for reference-type slots.
         // ---------------------------------------------------------------------
 
-        [Fact(Skip = "MessagePack does not yet preserve custom reference-type slot fidelity (revives as Dictionary). TypeName-driven MP revival is a #40/#41 (Batch 8) follow-up; JSON is the supported reference-type path.")]
+        // #41 (Batch 8): MessagePack now performs WHITELIST-DRIVEN typed revival.
+        // With a validator that allows the custom type, the recorded TypeName drives
+        // re-materialization of the contractless-revived Dictionary back into the
+        // concrete type, so a whitelisted custom reference type round-trips as itself
+        // (not a Dictionary). UN-SKIPPED now that revival is implemented.
+        [Fact]
         public void MessagePackSerializer_PreservesCustomReferenceTypeSlotFidelity()
         {
             var payload = new SharedPayload { Id = 7, Name = "shared" };
@@ -418,15 +423,94 @@ namespace Prim.Tests.Unit
             var state = new ContinuationState(frame);
 
             var resolver = new SlotTypeResolver();
-            resolver.AddResolver(name => name.StartsWith(typeof(SharedPayload).FullName) ? typeof(SharedPayload) : null);
-            var serializer = new MessagePackContinuationSerializer(
-                MessagePack.MessagePackSerializerOptions.Standard
-                    .WithResolver(MessagePack.Resolvers.ContractlessStandardResolver.Instance),
-                resolver);
+            resolver.AddResolver(name =>
+                name != null && name.StartsWith(typeof(SharedPayload).FullName) ? typeof(SharedPayload) : null);
+
+            var serializer = new MessagePackContinuationSerializer(resolver);
+
+            // The whitelist is what authorizes typed revival.
+            var validator = new ContinuationValidator(ValidationOptions.Lenient);
+            validator.RegisterAllowedType(typeof(SharedPayload));
+            serializer.Validator = validator;
 
             var restored = RoundTrip(serializer, state);
 
             Assert.IsType<SharedPayload>(restored.StackHead.Slots[0]);
+            Assert.Equal(7, ((SharedPayload)restored.StackHead.Slots[0]).Id);
+            Assert.Equal("shared", ((SharedPayload)restored.StackHead.Slots[0]).Name);
+        }
+
+        // ---------------------------------------------------------------------
+        // #43 / #41 (Batch 8): the serializers can run the validator as part of
+        // deserialization. A state carrying a disallowed type is REJECTED instead of
+        // being handed back, closing the "validation depends on the caller wiring
+        // runner.Validator" gap.
+        // ---------------------------------------------------------------------
+
+        public sealed class ForbiddenPayload
+        {
+            public int Value { get; set; }
+        }
+
+        [Fact]
+        public void JsonSerializer_WithValidator_RejectsDisallowedTypeOnDeserialize()
+        {
+            // Serialize WITHOUT a validator (producer side), then deserialize WITH a
+            // validator that does not allow the payload type.
+            var resolver = new SlotTypeResolver();
+            resolver.AddResolver(name =>
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+
+            var producer = new JsonContinuationSerializer(resolver);
+            var frame = new HostFrameRecord(100, 0, new object[] { new ForbiddenPayload { Value = 1 } }, null);
+            var bytes = producer.Serialize(new ContinuationState(frame));
+
+            var consumerResolver = new SlotTypeResolver();
+            consumerResolver.AddResolver(name =>
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+            var consumer = new JsonContinuationSerializer(consumerResolver)
+            {
+                // Type checking on, but no descriptor required: the disallowed slot
+                // type is what triggers the rejection.
+                Validator = new ContinuationValidator(new ValidationOptions
+                {
+                    RequireRegisteredMethods = false,
+                    ValidateSlotTypes = true,
+                    ValidateSlotCounts = false
+                })
+            };
+
+            Assert.Throws<ValidationException>(() => consumer.Deserialize(bytes));
+        }
+
+        [Fact]
+        public void MessagePackSerializer_WithValidator_RejectsDisallowedTypeOnDeserialize()
+        {
+            var resolver = new SlotTypeResolver();
+            resolver.AddResolver(name =>
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+
+            var producer = new MessagePackContinuationSerializer(resolver);
+            var frame = new HostFrameRecord(100, 0, new object[] { new ForbiddenPayload { Value = 1 } }, null);
+            var bytes = producer.Serialize(new ContinuationState(frame));
+
+            var consumerResolver = new SlotTypeResolver();
+            consumerResolver.AddResolver(name =>
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+            var consumer = new MessagePackContinuationSerializer(consumerResolver)
+            {
+                // ForbiddenPayload is NOT registered, so revival is refused and the
+                // value remains a Dictionary, which the type-checking validator
+                // rejects.
+                Validator = new ContinuationValidator(new ValidationOptions
+                {
+                    RequireRegisteredMethods = false,
+                    ValidateSlotTypes = true,
+                    ValidateSlotCounts = false
+                })
+            };
+
+            Assert.Throws<ValidationException>(() => consumer.Deserialize(bytes));
         }
     }
 }
