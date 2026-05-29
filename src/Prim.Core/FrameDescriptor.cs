@@ -69,9 +69,11 @@ namespace Prim.Core
         {
             MethodToken = methodToken;
             MethodName = methodName ?? throw new ArgumentNullException(nameof(methodName));
-            Slots = slots ?? throw new ArgumentNullException(nameof(slots));
-            YieldPointIds = yieldPointIds ?? throw new ArgumentNullException(nameof(yieldPointIds));
-            LiveSlotsAtYieldPoint = liveSlotsAtYieldPoint ?? throw new ArgumentNullException(nameof(liveSlotsAtYieldPoint));
+            // Defensive copies (main) so a caller cannot mutate descriptor internals
+            // post-registration; plus the signature manifest (v1, #44).
+            Slots = (FrameSlot[])(slots ?? throw new ArgumentNullException(nameof(slots))).Clone();
+            YieldPointIds = (int[])(yieldPointIds ?? throw new ArgumentNullException(nameof(yieldPointIds))).Clone();
+            LiveSlotsAtYieldPoint = (BitArray[])(liveSlotsAtYieldPoint ?? throw new ArgumentNullException(nameof(liveSlotsAtYieldPoint))).Clone();
             Signature = signature;
 
             if (yieldPointIds.Length != liveSlotsAtYieldPoint.Length)

@@ -1,3 +1,5 @@
+using System;
+
 namespace Prim.Core
 {
     /// <summary>
@@ -48,11 +50,20 @@ namespace Prim.Core
         public int GetStackDepth()
         {
             var depth = 1;
+            var slow = this;
+            var fast = this;
             var current = Caller;
             while (current != null)
             {
                 depth++;
                 current = current.Caller;
+
+                slow = slow.Caller;
+                fast = fast?.Caller?.Caller;
+                if (fast != null && fast == slow)
+                {
+                    break; // Circular chain detected - return depth so far
+                }
             }
             return depth;
         }

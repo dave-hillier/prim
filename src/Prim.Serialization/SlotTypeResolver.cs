@@ -41,7 +41,7 @@ namespace Prim.Serialization
                 return cached;
             }
 
-            // Try custom resolvers
+            // Try custom resolvers (user-registered, trusted)
             foreach (var resolver in _customResolvers)
             {
                 var resolved = resolver(typeName);
@@ -52,7 +52,11 @@ namespace Prim.Serialization
                 }
             }
 
-            // Try Type.GetType
+            // Resolve assembly-qualified / full names. Resolution is NOT the security
+            // boundary — whether a resolved type may actually be instantiated is gated
+            // downstream by the whitelist (ContinuationValidator.IsTypeAllowed /
+            // ContinuationTypeRegistry) before any object is constructed. Resolving here
+            // is required so GetTypeName(AssemblyQualifiedName) round-trips (issue #40).
             var type = Type.GetType(typeName);
             if (type != null)
             {
@@ -60,7 +64,6 @@ namespace Prim.Serialization
                 return type;
             }
 
-            // Try loading from all loaded assemblies
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 type = assembly.GetType(typeName);
@@ -86,6 +89,7 @@ namespace Prim.Serialization
             if (type == typeof(long)) return "long";
             if (type == typeof(short)) return "short";
             if (type == typeof(byte)) return "byte";
+            if (type == typeof(sbyte)) return "sbyte";
             if (type == typeof(bool)) return "bool";
             if (type == typeof(float)) return "float";
             if (type == typeof(double)) return "double";

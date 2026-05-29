@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using Prim.Core;
 using MessagePack;
+using MessagePack.Formatters;
+using MessagePack.Resolvers;
 
 namespace Prim.Serialization
 {
@@ -14,6 +16,7 @@ namespace Prim.Serialization
         private readonly MessagePackSerializerOptions _options;
         private readonly SlotCodec _codec;
         private readonly SlotTypeResolver _resolver;
+        private readonly ContinuationTypeRegistry _typeRegistry;
 
         /// <summary>
         /// Optional validator. When set it does two things on <see cref="Deserialize"/>:
@@ -35,15 +38,27 @@ namespace Prim.Serialization
         public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public MessagePackContinuationSerializer()
-            : this(new SlotTypeResolver())
+            : this(new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
         public MessagePackContinuationSerializer(SlotTypeResolver resolver)
+            : this(resolver, ContinuationTypeRegistry.Default)
+        {
+        }
+
+        // main's API: choose the allow-list registry while keeping v1's typed-envelope path.
+        public MessagePackContinuationSerializer(ContinuationTypeRegistry typeRegistry)
+            : this(new SlotTypeResolver(), typeRegistry)
+        {
+        }
+
+        public MessagePackContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             _resolver = resolver;
             _codec = new SlotCodec(resolver);
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
 
             // Use contractless resolver to serialize any object
             _options = MessagePackSerializerOptions.Standard
@@ -60,16 +75,28 @@ namespace Prim.Serialization
         }
 
         public MessagePackContinuationSerializer(MessagePackSerializerOptions options)
-            : this(options, new SlotTypeResolver())
+            : this(options, new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
         public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver)
+            : this(options, resolver, ContinuationTypeRegistry.Default)
+        {
+        }
+
+        // main's API: explicit options + allow-list registry.
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, ContinuationTypeRegistry typeRegistry)
+            : this(options, new SlotTypeResolver(), typeRegistry)
+        {
+        }
+
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             _resolver = resolver;
             _codec = new SlotCodec(resolver);
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
         }
 
         /// <inheritdoc/>
@@ -87,6 +114,10 @@ namespace Prim.Serialization
             if (data == null) throw new ArgumentNullException(nameof(data));
 
             var dto = MessagePackSerializer.Deserialize<ContinuationStateDto>(data, _options);
+            // Belt-and-suspenders: main's registry allow-list check on the raw DTO
+            // values (#41) AND v1's typed-envelope revival + ContinuationValidator
+            // on the final state.
+            ValidateDtoTypes(dto);
             var state = ConvertFromDto(dto);
             Validator?.Validate(state);
             return state;
@@ -256,6 +287,271 @@ namespace Prim.Serialization
                 // Shape did not match the target; leave it for the validator.
                 return decodedValue;
             }
+        }
+
+        private void ValidateDtoTypes(ContinuationStateDto dto)
+        {
+            if (dto == null) return;
+
+            ValidateValue(dto.YieldedValue, "YieldedValue");
+            ValidateFrameTypes(dto.StackHead);
+        }
+
+        private void ValidateFrameTypes(HostFrameRecordDto frame)
+        {
+            if (frame == null) return;
+
+            // v1 stores slots as typed envelopes. main's allow-list (#41) applies to
+            // the actual slot VALUE inside each envelope, not the envelope wrapper.
+            // Reference types revived by the contractless resolver arrive as a
+            // Dictionary/composite shape and are intentionally left for v1's
+            // whitelist-driven revival + ContinuationValidator to authorize; the
+            // registry gate here enforces main's allow-list on simple scalar values.
+            if (frame.Slots != null)
+            {
+                for (var i = 0; i < frame.Slots.Length; i++)
+                {
+                    var envelope = frame.Slots[i];
+                    ValidateValue(envelope?.Value, $"Slots[{i}]");
+                }
+            }
+
+            ValidateFrameTypes(frame.Caller);
+        }
+
+        private void ValidateValue(object value, string context)
+        {
+            if (value == null) return;
+
+            // Composite shapes produced by the contractless resolver for reference
+            // types (Dictionary, untyped object[]) are deferred to v1's typed
+            // revival + ContinuationValidator. Only scalar/array slot values are
+            // gated by main's registry allow-list here.
+            if (IsDeferredToRevival(value)) return;
+
+            if (!_typeRegistry.IsAllowedValue(value))
+            {
+                var typeName = value.GetType().FullName ?? "null";
+                throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for {context}.");
+            }
+        }
+
+        private static bool IsDeferredToRevival(object value)
+        {
+            // A custom reference type comes back from the contractless resolver as a
+            // map (IDictionary) or, for object-typed members, an object[]. These are
+            // not final slot types; v1's ReviveReferenceType + Validator decide them.
+            if (value is System.Collections.IDictionary) return true;
+            if (value is object[]) return true;
+            return false;
+        }
+
+        private static MessagePackSerializerOptions CreateRestrictedOptions(ContinuationTypeRegistry typeRegistry)
+        {
+            var resolver = CompositeResolver.Create(new IFormatterResolver[]
+            {
+                new RestrictedObjectResolver(typeRegistry),
+                TypelessContractlessStandardResolver.Instance
+            });
+
+            return MessagePackSerializerOptions.Standard
+                .WithResolver(resolver)
+                .WithCompression(MessagePackCompression.Lz4BlockArray)
+                .WithSecurity(MessagePackSecurity.UntrustedData);
+        }
+    }
+
+    /// <summary>
+    /// Registry of allowed types for continuation serialization.
+    /// </summary>
+    public sealed class ContinuationTypeRegistry
+    {
+        private static readonly Type[] DefaultTypes =
+        {
+            typeof(bool),
+            typeof(byte),
+            typeof(sbyte),
+            typeof(short),
+            typeof(ushort),
+            typeof(int),
+            typeof(uint),
+            typeof(long),
+            typeof(ulong),
+            typeof(float),
+            typeof(double),
+            typeof(decimal),
+            typeof(char),
+            typeof(string),
+            typeof(DateTime),
+            typeof(DateTimeOffset),
+            typeof(TimeSpan),
+            typeof(Guid)
+        };
+
+        private readonly HashSet<Type> _allowedTypes;
+
+        public ContinuationTypeRegistry(IEnumerable<Type> allowedTypes)
+        {
+            if (allowedTypes == null) throw new ArgumentNullException(nameof(allowedTypes));
+            _allowedTypes = new HashSet<Type>(allowedTypes);
+        }
+
+        public static ContinuationTypeRegistry Default { get; } = new ContinuationTypeRegistry(DefaultTypes);
+
+        public bool IsAllowed(Type type)
+        {
+            if (type == null) return true;
+
+            if (type.IsEnum) return true;
+
+            if (type.IsArray)
+            {
+                return IsAllowed(type.GetElementType());
+            }
+
+            var underlyingNullable = Nullable.GetUnderlyingType(type);
+            if (underlyingNullable != null)
+            {
+                return IsAllowed(underlyingNullable);
+            }
+
+            return _allowedTypes.Contains(type);
+        }
+
+        public bool IsAllowedValue(object value)
+        {
+            if (value == null) return true;
+
+            if (value is Array array)
+            {
+                foreach (var item in array)
+                {
+                    if (!IsAllowedValue(item))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            return IsAllowed(value.GetType());
+        }
+    }
+
+    internal sealed class RestrictedObjectResolver : IFormatterResolver
+    {
+        private readonly ContinuationTypeRegistry _typeRegistry;
+
+        public RestrictedObjectResolver(ContinuationTypeRegistry typeRegistry)
+        {
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+        }
+
+        public IMessagePackFormatter<T> GetFormatter<T>()
+        {
+            if (typeof(T) == typeof(object))
+            {
+                return (IMessagePackFormatter<T>)(object)new RestrictedObjectFormatter(_typeRegistry);
+            }
+
+            if (typeof(T) == typeof(object[]))
+            {
+                return (IMessagePackFormatter<T>)(object)new RestrictedObjectArrayFormatter(_typeRegistry);
+            }
+
+            return null;
+        }
+    }
+
+    internal sealed class RestrictedObjectFormatter : IMessagePackFormatter<object>
+    {
+        private readonly ContinuationTypeRegistry _typeRegistry;
+
+        public RestrictedObjectFormatter(ContinuationTypeRegistry typeRegistry)
+        {
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+        }
+
+        public void Serialize(ref MessagePackWriter writer, object value, MessagePackSerializerOptions options)
+        {
+            if (!_typeRegistry.IsAllowedValue(value))
+            {
+                var typeName = value?.GetType().FullName ?? "null";
+                throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for YieldedValue or Slots.");
+            }
+
+            MessagePackSerializer.Serialize(ref writer, value, options.WithResolver(TypelessContractlessStandardResolver.Instance));
+        }
+
+        public object Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            var result = MessagePackSerializer.Deserialize<object>(ref reader, options.WithResolver(TypelessContractlessStandardResolver.Instance));
+            if (!_typeRegistry.IsAllowedValue(result))
+            {
+                var typeName = result?.GetType().FullName ?? "null";
+                throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for YieldedValue or Slots.");
+            }
+
+            return result;
+        }
+    }
+
+    internal sealed class RestrictedObjectArrayFormatter : IMessagePackFormatter<object[]>
+    {
+        private readonly ContinuationTypeRegistry _typeRegistry;
+
+        public RestrictedObjectArrayFormatter(ContinuationTypeRegistry typeRegistry)
+        {
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+        }
+
+        public void Serialize(ref MessagePackWriter writer, object[] value, MessagePackSerializerOptions options)
+        {
+            if (value == null)
+            {
+                writer.WriteNil();
+                return;
+            }
+
+            writer.WriteArrayHeader(value.Length);
+
+            for (var i = 0; i < value.Length; i++)
+            {
+                var item = value[i];
+                if (!_typeRegistry.IsAllowedValue(item))
+                {
+                    var typeName = item?.GetType().FullName ?? "null";
+                    throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for Slots[{i}].");
+                }
+
+                MessagePackSerializer.Serialize(ref writer, item, options.WithResolver(TypelessContractlessStandardResolver.Instance));
+            }
+        }
+
+        public object[] Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        {
+            if (reader.TryReadNil())
+            {
+                return null;
+            }
+
+            var length = reader.ReadArrayHeader();
+            var result = new object[length];
+
+            for (var i = 0; i < length; i++)
+            {
+                var item = MessagePackSerializer.Deserialize<object>(ref reader, options.WithResolver(TypelessContractlessStandardResolver.Instance));
+                if (!_typeRegistry.IsAllowedValue(item))
+                {
+                    var typeName = item?.GetType().FullName ?? "null";
+                    throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for Slots[{i}].");
+                }
+
+                result[i] = item;
+            }
+
+            return result;
         }
     }
 

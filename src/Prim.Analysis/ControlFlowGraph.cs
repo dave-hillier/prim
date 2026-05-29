@@ -237,6 +237,16 @@ namespace Prim.Analysis
             {
                 Dfs(EntryBlock);
             }
+
+            // Also DFS from exception handler blocks which may not be reachable
+            // from the entry block via normal control flow edges
+            foreach (var block in Blocks)
+            {
+                if (block.IsExceptionHandler && !visited.Contains(block))
+                {
+                    Dfs(block);
+                }
+            }
         }
 
         private static bool IsBranch(Instruction instruction)
@@ -256,7 +266,8 @@ namespace Prim.Analysis
                    code == Code.Bge || code == Code.Bge_S ||
                    code == Code.Bge_Un || code == Code.Bge_Un_S ||
                    code == Code.Switch ||
-                   code == Code.Leave || code == Code.Leave_S;
+                   code == Code.Leave || code == Code.Leave_S ||
+                   code == Code.Throw || code == Code.Rethrow;
         }
 
         private static bool IsUnconditionalBranch(Instruction instruction)

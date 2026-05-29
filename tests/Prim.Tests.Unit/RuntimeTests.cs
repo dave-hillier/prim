@@ -665,22 +665,27 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void ContinuationRunner_Constructor_WithEntryPoints()
+        public void ContinuationRunner_Initializer_WithEntryPoints()
         {
             var registry = new EntryPointRegistry();
-            var runner = new ContinuationRunner(registry);
+            var runner = new ContinuationRunner { EntryPoints = registry };
 
             Assert.Same(registry, runner.EntryPoints);
         }
 
         [Fact]
-        public void ContinuationRunner_Constructor_WithAllComponents()
+        public void ContinuationRunner_Initializer_WithAllComponents()
         {
             var serializer = new TestSerializer();
             var validator = new ContinuationValidator();
             var registry = new EntryPointRegistry();
 
-            var runner = new ContinuationRunner(serializer, validator, registry);
+            var runner = new ContinuationRunner
+            {
+                Serializer = serializer,
+                Validator = validator,
+                EntryPoints = registry
+            };
 
             Assert.Same(serializer, runner.Serializer);
             Assert.Same(validator, runner.Validator);

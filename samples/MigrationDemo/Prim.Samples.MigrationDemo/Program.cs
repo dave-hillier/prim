@@ -48,7 +48,7 @@ internal class Program
 
         var stateFile = Path.Combine(Path.GetTempPath(), StateFileName);
         var serializer = new JsonContinuationSerializer();
-        var runner = new ContinuationRunner(serializer);
+        var runner = new ContinuationRunner { Serializer = serializer };
         var computation = new PrimeFinder();
 
         // Phase 1: Start and run until we decide to suspend
@@ -143,7 +143,7 @@ internal class Program
     {
         var stateFile = Path.Combine(Directory.GetCurrentDirectory(), StateFileName);
         var serializer = new JsonContinuationSerializer();
-        var runner = new ContinuationRunner(serializer);
+        var runner = new ContinuationRunner { Serializer = serializer };
         var computation = new PrimeFinder();
 
         Console.WriteLine("Starting computation (will suspend after 100 primes)...\n");
@@ -203,7 +203,7 @@ internal class Program
         }
 
         var serializer = new JsonContinuationSerializer();
-        var runner = new ContinuationRunner(serializer);
+        var runner = new ContinuationRunner { Serializer = serializer };
 
         Console.WriteLine($"Loading state from: {stateFile}...\n");
 

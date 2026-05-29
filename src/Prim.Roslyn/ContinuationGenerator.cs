@@ -1067,19 +1067,20 @@ namespace Prim.Roslyn
                     ? DisplayType(exTypeSymbol)
                     : declaration.Type.ToString();
 
-                string varName;
-                if (string.IsNullOrEmpty(declaration.Identifier.Text))
-                {
-                    // Anonymous catch: synthesize a guard name unique among sibling
-                    // catches of the same try (the clause index disambiguates).
-                    varName = $"__catchEx{context.TryBlockIndex}_{clauseIndex}";
-                }
-                else
+                // The actual catch always binds a FRESH guard name so it never collides
+                // with a hoisted slot of the same source name (CS0136). When the source
+                // catch declared a named variable, that name may be hoisted (so body
+                // references rewrite to the slot); we copy the caught exception into that
+                // hoisted slot at the top of the catch body.
+                var guardName = $"__catchEx{context.TryBlockIndex}_{clauseIndex}";
+                string hoistedName = null;
+                if (!string.IsNullOrEmpty(declaration.Identifier.Text))
                 {
                     var sym = context.Model.GetDeclaredSymbol(catchClause.Declaration);
-                    varName = (sym != null && context.Hoist.TryGetName(sym, out var n))
-                        ? n
-                        : declaration.Identifier.Text;
+                    if (sym != null && context.Hoist.TryGetName(sym, out var n))
+                    {
+                        hoistedName = n;
+                    }
                 }
 
                 // Only inject the SuspendException-escape filter when this catch could
@@ -1088,12 +1089,21 @@ namespace Prim.Roslyn
                 // warning in consumer code (#23 follow-up).
                 if (CatchCanCatchSuspend(exTypeSymbol, context))
                 {
-                    sb.AppendLine($"{indent}catch ({exType} {varName}) when (!({varName} is SuspendException))");
+                    sb.AppendLine($"{indent}catch ({exType} {guardName}) when (!({guardName} is SuspendException))");
                 }
                 else
                 {
-                    sb.AppendLine($"{indent}catch ({exType} {varName})");
+                    sb.AppendLine($"{indent}catch ({exType} {guardName})");
                 }
+
+                sb.AppendLine($"{indent}{{");
+                if (hoistedName != null)
+                {
+                    sb.AppendLine($"{indent}    {hoistedName} = {guardName};");
+                }
+                GenerateStatements(sb, catchClause.Block.Statements, context, indent + "    ");
+                sb.AppendLine($"{indent}}}");
+                return;
             }
             else
             {

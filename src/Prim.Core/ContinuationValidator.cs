@@ -240,21 +240,25 @@ namespace Prim.Core
             }
 
             var errors = new List<string>();
+            if (state.Version != ContinuationState.CurrentVersion)
+            {
+                errors.Add($"Unsupported continuation version {state.Version} (expected {ContinuationState.CurrentVersion})");
+            }
             var frame = state.StackHead;
             var frameIndex = 0;
 
             while (frame != null)
             {
-                ValidateFrame(frame, frameIndex, errors);
-                frame = frame.Caller;
-                frameIndex++;
-
                 // Prevent infinite loops from malicious circular references
-                if (frameIndex > _options.MaxStackDepth)
+                if (frameIndex >= _options.MaxStackDepth)
                 {
                     errors.Add($"Stack depth exceeds maximum allowed ({_options.MaxStackDepth})");
                     break;
                 }
+
+                ValidateFrame(frame, frameIndex, errors);
+                frame = frame.Caller;
+                frameIndex++;
             }
 
             // Validate yielded value if type checking is enabled
@@ -473,17 +477,15 @@ namespace Prim.Core
         /// <summary>
         /// Default validation options (strict).
         /// </summary>
-        public static readonly ValidationOptions Default = new ValidationOptions();
+        public static ValidationOptions Default => new ValidationOptions();
 
         /// <summary>
         /// Lenient options for trusted environments.
         /// </summary>
-        public static readonly ValidationOptions Lenient = new ValidationOptions
-        {
-            RequireRegisteredMethods = false,
-            ValidateSlotCounts = false,
-            ValidateSlotTypes = false
-        };
+        public static ValidationOptions Lenient => new ValidationOptions(
+            requireRegisteredMethods: false,
+            validateSlotCounts: false,
+            validateSlotTypes: false);
 
         /// <summary>
         /// Whether to require all method tokens to be registered.
@@ -525,6 +527,26 @@ namespace Prim.Core
         /// Default: 16
         /// </summary>
         public int MaxArrayNestingDepth { get; set; } = 16;
+
+        public ValidationOptions()
+        {
+        }
+
+        public ValidationOptions(
+            bool requireRegisteredMethods = true,
+            bool validateSlotCounts = true,
+            bool validateSlotTypes = true,
+            int maxStackDepth = 1000,
+            int maxArrayLength = 1_000_000,
+            int maxArrayNestingDepth = 16)
+        {
+            RequireRegisteredMethods = requireRegisteredMethods;
+            ValidateSlotCounts = validateSlotCounts;
+            ValidateSlotTypes = validateSlotTypes;
+            MaxStackDepth = maxStackDepth;
+            MaxArrayLength = maxArrayLength;
+            MaxArrayNestingDepth = maxArrayNestingDepth;
+        }
     }
 
     /// <summary>
@@ -568,7 +590,9 @@ namespace Prim.Core
         public override string ToString()
         {
             if (IsValid) return "Validation succeeded";
-            return $"Validation failed: {string.Join("; ", Errors)}";
+            if (Errors.Count == 1)
+                return $"Validation failed: {Errors[0]}";
+            return $"Validation failed ({Errors.Count} errors): {string.Join("; ", Errors)}";
         }
     }
 

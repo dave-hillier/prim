@@ -481,10 +481,10 @@ namespace Prim.Tests.Roslyn
         {
             var instance = new SampleContinuableClass();
 
-            // foreach over {1,2,3,4} -> 10
+            // foreach over {1,2,3,4,5} -> 15
             var result = instance.ForEachSum_Continuable();
 
-            Assert.Equal(10, result);
+            Assert.Equal(15, result);
         }
 
         [Fact]
@@ -530,7 +530,7 @@ namespace Prim.Tests.Roslyn
                 entryPoint: () => instance.ForEachSum_Continuable());
 
             Assert.True(resumed.IsCompleted);
-            Assert.Equal(10, ((ContinuationResult<int>.Completed)resumed).Value);
+            Assert.Equal(15, ((ContinuationResult<int>.Completed)resumed).Value);
         }
 
         [Fact]

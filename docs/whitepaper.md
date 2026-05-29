@@ -131,7 +131,7 @@ User code may have its own catch blocks. A naive `catch (Exception)` would inter
 
 2. **Rethrow filtering**: Transform user catch blocks to check for `SuspendException` and rethrow immediately
 
-The original Second Life implementation used approach #1 with a custom exception base.
+The original Second Life implementation did not support use thrown or caught exceptions. 
 
 ---
 
