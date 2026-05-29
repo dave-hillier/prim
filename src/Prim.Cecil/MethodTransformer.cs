@@ -192,11 +192,22 @@ namespace Prim.Cecil
 
             if (_handleYieldPointMethod == null) return;
 
-            // Process in reverse order to maintain correct offsets
-            var sortedYieldPoints = yieldPoints.OrderByDescending(yp => yp.Instruction.Offset).ToList();
-
-            // Calculate instruction costs between yield points
+            // Precompute per-yield-point instruction costs from the PRISTINE instruction
+            // stream BEFORE any mutation. Cost is keyed by yield-point Id and derived from
+            // instruction identity/index, not byte offsets, so it is unaffected by the
+            // insertions performed below.
             var costs = CalculateInstructionCosts(yieldPoints);
+
+            // Process yield points back-to-front by their POSITION in the instruction
+            // stream (instruction identity that survives insertions) rather than by byte
+            // Offset. Offset values are stale the moment we InsertBefore the first check,
+            // so ordering by Offset would be incorrect after the first insertion. Indexing
+            // by current position in body.Instructions is robust because InsertBefore only
+            // shifts later instructions and never reorders the existing ones.
+            var instructions = _method.Body.Instructions;
+            var sortedYieldPoints = yieldPoints
+                .OrderByDescending(yp => instructions.IndexOf(yp.Instruction))
+                .ToList();
 
             foreach (var yp in sortedYieldPoints)
             {
@@ -258,26 +269,26 @@ namespace Prim.Cecil
             if (yieldPoints.Count == 0 || instructions.Count == 0)
                 return costs;
 
-            // Sort yield points by offset
-            var sortedYieldPoints = yieldPoints.OrderBy(yp => yp.Instruction.Offset).ToList();
+            // Order yield points by their POSITION in the instruction stream rather than
+            // by byte Offset. This is computed against the pristine stream before any
+            // insertions; counting by index range (not offset comparisons) makes the cost
+            // a stable count of the actual instructions between consecutive yield points.
+            var sortedYieldPoints = yieldPoints
+                .OrderBy(yp => instructions.IndexOf(yp.Instruction))
+                .ToList();
 
-            // Cost for first yield point is from method start
-            int previousOffset = 0;
+            // Cost for first yield point is the number of instructions from method start.
+            int previousIndex = 0;
             foreach (var yp in sortedYieldPoints)
             {
-                // Count instructions between previous offset and this yield point
-                int count = 0;
-                foreach (var instr in instructions)
-                {
-                    if (instr.Offset >= previousOffset && instr.Offset < yp.Instruction.Offset)
-                    {
-                        count++;
-                    }
-                }
+                int ypIndex = instructions.IndexOf(yp.Instruction);
 
-                // Minimum cost of 1 to ensure progress
+                // Count instructions in [previousIndex, ypIndex).
+                int count = ypIndex - previousIndex;
+
+                // Minimum cost of 1 to ensure progress.
                 costs[yp.Id] = Math.Max(1, count);
-                previousOffset = yp.Instruction.Offset;
+                previousIndex = ypIndex;
             }
 
             return costs;
