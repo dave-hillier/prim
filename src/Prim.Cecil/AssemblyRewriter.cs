@@ -14,6 +14,16 @@ namespace Prim.Cecil
     {
         private readonly RewriterOptions _options;
 
+        /// <summary>
+        /// Methods that were eligible for transformation (had [Continuable] and yield
+        /// points) but were skipped because their state could not be safely captured
+        /// (e.g. byref/pinned/pointer locals or ref/out parameters; see #38). Each entry
+        /// is (method full name, reason). A skipped method is left untransformed rather
+        /// than producing invalid IL.
+        /// </summary>
+        public List<(string Method, string Reason)> SkippedMethods { get; } =
+            new List<(string, string)>();
+
         public AssemblyRewriter() : this(RewriterOptions.Default)
         {
         }
@@ -87,6 +97,10 @@ namespace Prim.Cecil
                 {
                     var transformer = new MethodTransformer(method, _options);
                     transformer.Transform();
+                    if (!transformer.WasTransformed && transformer.SkipReason != null)
+                    {
+                        SkippedMethods.Add((method.FullName, transformer.SkipReason));
+                    }
                 }
             }
 

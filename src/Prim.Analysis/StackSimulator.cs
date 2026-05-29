@@ -543,6 +543,46 @@ namespace Prim.Analysis
                     if (instruction.Operand is MethodReference ctor)
                         return ctor.DeclaringType;
                     return ts.Object;
+
+                // Binary numeric / bitwise / shift operations consume two operands (one for
+                // shifts: value + shift-amount) and push a result whose type follows the
+                // operands (ECMA-335 III.1.5). Inferring it (rather than widening to object)
+                // is essential: when such a result is live at a yield point it is spilled to
+                // a temp local, and a temp typed 'object' would make the post-resume reload +
+                // numeric op unverifiable (ExpectedNumericType). We derive the result type
+                // from the surviving operand(s) using ECMA-335's binary-numeric promotion:
+                // result = the "wider" of the two operand types, with int32 as the default.
+                case Code.Add:
+                case Code.Sub:
+                case Code.Mul:
+                case Code.Div:
+                case Code.Div_Un:
+                case Code.Rem:
+                case Code.Rem_Un:
+                case Code.And:
+                case Code.Or:
+                case Code.Xor:
+                case Code.Add_Ovf:
+                case Code.Add_Ovf_Un:
+                case Code.Sub_Ovf:
+                case Code.Sub_Ovf_Un:
+                case Code.Mul_Ovf:
+                case Code.Mul_Ovf_Un:
+                    return BinaryNumericResult(stackBeforePush, ts);
+                case Code.Shl:
+                case Code.Shr:
+                case Code.Shr_Un:
+                    // Shift result type follows the value being shifted (the lower operand);
+                    // the shift amount (top) is discarded.
+                    return stackBeforePush.Count >= 2
+                        ? (stackBeforePush[stackBeforePush.Count - 2] ?? ts.Int32)
+                        : ts.Int32;
+                case Code.Neg:
+                case Code.Not:
+                    // Unary numeric: result type == operand type.
+                    return stackBeforePush.Count >= 1
+                        ? (stackBeforePush[stackBeforePush.Count - 1] ?? ts.Int32)
+                        : ts.Int32;
             }
 
             // Method-call return values (call / callvirt / calli).
@@ -563,6 +603,40 @@ namespace Prim.Analysis
             }
 
             return ts.Object;
+        }
+
+        /// <summary>
+        /// Result type of a binary numeric/bitwise op given the two operands on top of the
+        /// stack (bottom..top). Follows ECMA-335 III.1.5 binary-numeric promotion for the
+        /// cases the spiller needs: matching operand types pass through; otherwise the
+        /// "wider" operand wins (float &gt; native int &gt; int64 &gt; int32). Falls back to
+        /// the top operand, then int32, when types are unknown.
+        /// </summary>
+        private TypeReference BinaryNumericResult(List<TypeReference> stackBeforePush, TypeSystem ts)
+        {
+            if (stackBeforePush.Count < 2)
+            {
+                return stackBeforePush.Count == 1
+                    ? (stackBeforePush[0] ?? ts.Int32)
+                    : ts.Int32;
+            }
+
+            var b = stackBeforePush[stackBeforePush.Count - 1]; // top
+            var a = stackBeforePush[stackBeforePush.Count - 2]; // below top
+            if (a == null && b == null) return ts.Int32;
+            if (a == null) return b;
+            if (b == null) return a;
+            if (a.FullName == b.FullName) return a;
+
+            int Rank(TypeReference t) => t.FullName switch
+            {
+                "System.Double" => 5,
+                "System.Single" => 4,
+                "System.IntPtr" or "System.UIntPtr" => 3,
+                "System.Int64" or "System.UInt64" => 2,
+                _ => 1, // int32 and narrower
+            };
+            return Rank(a) >= Rank(b) ? a : b;
         }
 
         private TypeReference LocalType(int index)
