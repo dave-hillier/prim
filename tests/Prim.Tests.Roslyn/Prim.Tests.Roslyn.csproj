@@ -35,6 +35,7 @@
   -->
   <ItemGroup>
     <Compile Include="..\..\src\Prim.Roslyn\YieldPointAnalyzer.cs" Link="Analyzer\YieldPointAnalyzer.cs" />
+    <Compile Include="..\..\src\Prim.Roslyn\ContinuationGenerator.cs" Link="Analyzer\ContinuationGenerator.cs" />
   </ItemGroup>
 
 </Project>

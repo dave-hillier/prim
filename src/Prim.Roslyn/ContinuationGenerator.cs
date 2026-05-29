@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
@@ -19,33 +20,51 @@ namespace Prim.Roslyn
     [Generator]
     public class ContinuationGenerator : IIncrementalGenerator
     {
+        // --- Diagnostics (issue #26 / #29 / #28) ---
+
+        private static readonly DiagnosticDescriptor UnsupportedMember = new DiagnosticDescriptor(
+            id: "PRIM001",
+            title: "Unsupported [Continuable] member",
+            messageFormat: "[Continuable] is not supported on {0}; no continuation code was generated",
+            category: "Prim.Continuation",
+            defaultSeverity: DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
+
+        private static readonly DiagnosticDescriptor UnsupportedMethodShape = new DiagnosticDescriptor(
+            id: "PRIM002",
+            title: "Unsupported [Continuable] method shape",
+            messageFormat: "[Continuable] method '{0}' is not supported ({1}); no continuation code was generated",
+            category: "Prim.Continuation",
+            defaultSeverity: DiagnosticSeverity.Warning,
+            isEnabledByDefault: true);
+
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            // Find all methods with [Continuable] attribute
-            var methodDeclarations = context.SyntaxProvider
+            // Find all members with a [Continuable] attribute. We deliberately capture
+            // non-method members too (properties/indexers/etc.) so we can emit a
+            // diagnostic for them rather than silently ignoring them (#26).
+            var members = context.SyntaxProvider
                 .CreateSyntaxProvider(
-                    predicate: static (s, _) => IsCandidateMethod(s),
-                    transform: static (ctx, _) => GetMethodIfContinuable(ctx))
+                    predicate: static (s, _) => IsCandidateMember(s),
+                    transform: static (ctx, _) => GetMemberIfContinuable(ctx))
                 .Where(static m => m is not null);
 
-            // Combine with compilation
-            var compilationAndMethods = context.CompilationProvider.Combine(methodDeclarations.Collect());
+            var compilationAndMembers = context.CompilationProvider.Combine(members.Collect());
 
-            // Generate source
-            context.RegisterSourceOutput(compilationAndMethods,
+            context.RegisterSourceOutput(compilationAndMembers,
                 static (spc, source) => Execute(source.Left, source.Right, spc));
         }
 
-        private static bool IsCandidateMethod(SyntaxNode node)
+        private static bool IsCandidateMember(SyntaxNode node)
         {
-            return node is MethodDeclarationSyntax m && m.AttributeLists.Count > 0;
+            return node is MemberDeclarationSyntax m && m.AttributeLists.Count > 0;
         }
 
-        private static MethodDeclarationSyntax GetMethodIfContinuable(GeneratorSyntaxContext context)
+        private static MemberDeclarationSyntax GetMemberIfContinuable(GeneratorSyntaxContext context)
         {
-            var methodSyntax = (MethodDeclarationSyntax)context.Node;
+            var member = (MemberDeclarationSyntax)context.Node;
 
-            foreach (var attributeList in methodSyntax.AttributeLists)
+            foreach (var attributeList in member.AttributeLists)
             {
                 foreach (var attribute in attributeList.Attributes)
                 {
@@ -53,7 +72,7 @@ namespace Prim.Roslyn
                     if (name == "Continuable" || name == "ContinuableAttribute" ||
                         name.EndsWith(".Continuable") || name.EndsWith(".ContinuableAttribute"))
                     {
-                        return methodSyntax;
+                        return member;
                     }
                 }
             }
@@ -63,14 +82,45 @@ namespace Prim.Roslyn
 
         private static void Execute(
             Compilation compilation,
-            ImmutableArray<MethodDeclarationSyntax> methods,
+            ImmutableArray<MemberDeclarationSyntax> members,
             SourceProductionContext context)
         {
-            if (methods.IsDefaultOrEmpty)
+            if (members.IsDefaultOrEmpty)
                 return;
 
-            var methodsByType = methods
-                .Where(m => m is not null)
+            // Partition into supported methods vs. members we diagnose-and-skip (#26).
+            var supportedMethods = new List<MethodDeclarationSyntax>();
+
+            foreach (var member in members.Where(m => m is not null))
+            {
+                if (member is not MethodDeclarationSyntax method)
+                {
+                    // Property / indexer / event / field etc. carrying [Continuable].
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        UnsupportedMember,
+                        GetAttributeLocation(member),
+                        DescribeMemberKind(member)));
+                    continue;
+                }
+
+                var reason = GetUnsupportedReason(method);
+                if (reason != null)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        UnsupportedMethodShape,
+                        method.Identifier.GetLocation(),
+                        method.Identifier.Text,
+                        reason));
+                    continue;
+                }
+
+                supportedMethods.Add(method);
+            }
+
+            if (supportedMethods.Count == 0)
+                return;
+
+            var methodsByType = supportedMethods
                 .GroupBy(m => GetFullTypeName(m))
                 .ToList();
 
@@ -80,6 +130,83 @@ namespace Prim.Roslyn
                 var source = GenerateTransformedMethods(typeName, group.ToList(), compilation);
                 context.AddSource($"{typeName.Replace(".", "_")}_Continuations.g.cs", SourceText.From(source, Encoding.UTF8));
             }
+        }
+
+        private static Location GetAttributeLocation(MemberDeclarationSyntax member)
+        {
+            var attr = member.AttributeLists
+                .SelectMany(al => al.Attributes)
+                .FirstOrDefault(a =>
+                {
+                    var n = a.Name.ToString();
+                    return n == "Continuable" || n == "ContinuableAttribute" ||
+                           n.EndsWith(".Continuable") || n.EndsWith(".ContinuableAttribute");
+                });
+            return (attr ?? (SyntaxNode)member).GetLocation();
+        }
+
+        private static string DescribeMemberKind(MemberDeclarationSyntax member)
+        {
+            return member switch
+            {
+                PropertyDeclarationSyntax => "properties",
+                IndexerDeclarationSyntax => "indexers",
+                EventDeclarationSyntax => "events",
+                FieldDeclarationSyntax => "fields",
+                ConstructorDeclarationSyntax => "constructors",
+                _ => "this member kind"
+            };
+        }
+
+        /// <summary>
+        /// Returns a human-readable reason a method cannot be transformed, or null if
+        /// the method is supported. Covers async/iterator/generic/expression-bodied (#26).
+        /// </summary>
+        private static string GetUnsupportedReason(MethodDeclarationSyntax method)
+        {
+            // async (modifier or any await expression)
+            if (method.Modifiers.Any(m => m.IsKind(SyntaxKind.AsyncKeyword)) ||
+                method.DescendantNodes().OfType<AwaitExpressionSyntax>().Any())
+            {
+                return "async methods are not supported";
+            }
+
+            // iterator (yield return / yield break)
+            if (method.DescendantNodes().OfType<YieldStatementSyntax>().Any())
+            {
+                return "iterator methods (yield return/yield break) are not supported";
+            }
+
+            // generic method
+            if (method.TypeParameterList != null && method.TypeParameterList.Parameters.Count > 0)
+            {
+                return "generic methods are not supported";
+            }
+
+            // method declared on a generic type
+            for (var p = method.Parent; p != null; p = p.Parent)
+            {
+                if (p is TypeDeclarationSyntax t &&
+                    t.TypeParameterList != null && t.TypeParameterList.Parameters.Count > 0)
+                {
+                    return "methods on generic types are not supported";
+                }
+            }
+
+            // expression-bodied method with no block body: nothing to transform into a
+            // state machine. (Simple ones could be supported but we keep the contract:
+            // only block-bodied methods are transformed.)
+            if (method.Body == null && method.ExpressionBody != null)
+            {
+                return "expression-bodied methods are not supported";
+            }
+
+            if (method.Body == null)
+            {
+                return "methods without a body are not supported";
+            }
+
+            return null;
         }
 
         private static string GetFullTypeName(MethodDeclarationSyntax method)
@@ -104,7 +231,7 @@ namespace Prim.Roslyn
 
         private static string GenerateTransformedMethods(
             string typeName,
-            System.Collections.Generic.List<MethodDeclarationSyntax> methods,
+            List<MethodDeclarationSyntax> methods,
             Compilation compilation)
         {
             var sb = new StringBuilder();
@@ -113,13 +240,12 @@ namespace Prim.Roslyn
             var ns = lastDot > 0 ? typeName.Substring(0, lastDot) : null;
             var shortTypeName = lastDot > 0 ? typeName.Substring(lastDot + 1) : typeName;
 
-            // Collect all continuable method names for this type
-            var continuableMethodNames = new System.Collections.Generic.HashSet<string>(
-                methods.Select(m => m.Identifier.Text));
+            var continuableMethodNames = new HashSet<string>(methods.Select(m => m.Identifier.Text));
 
             sb.AppendLine("// <auto-generated />");
             sb.AppendLine("#nullable disable");
             sb.AppendLine("#pragma warning disable CS0162 // Unreachable code detected");
+            sb.AppendLine("#pragma warning disable CS0219 // Variable assigned but never used");
             sb.AppendLine();
             sb.AppendLine("using System;");
             sb.AppendLine("using Prim.Core;");
@@ -144,7 +270,7 @@ namespace Prim.Roslyn
 
                 foreach (var method in methods)
                 {
-                    GenerateTransformedMethod(sb, method, "        ", continuableMethodNames);
+                    GenerateTransformedMethod(sb, method, compilation, "        ", continuableMethodNames);
                 }
 
                 sb.AppendLine("    }");
@@ -159,7 +285,7 @@ namespace Prim.Roslyn
 
                 foreach (var method in methods)
                 {
-                    GenerateStaticTransformedMethod(sb, method, shortTypeName, "        ", continuableMethodNames);
+                    GenerateStaticTransformedMethod(sb, method, compilation, shortTypeName, "        ", continuableMethodNames);
                 }
 
                 sb.AppendLine("    }");
@@ -185,31 +311,50 @@ namespace Prim.Roslyn
             return sb.ToString();
         }
 
+        private static readonly SymbolDisplayFormat FqFormat =
+            SymbolDisplayFormat.FullyQualifiedFormat
+                .WithMiscellaneousOptions(
+                    SymbolDisplayMiscellaneousOptions.UseSpecialTypes |
+                    SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier);
+
+        /// <summary>
+        /// Resolves a type symbol to a fully-qualified name (global::...), so the
+        /// generated code binds regardless of usings (#25). Falls back to "object".
+        /// </summary>
+        private static string DisplayType(ITypeSymbol type)
+        {
+            if (type == null || type.TypeKind == TypeKind.Error)
+                return "object";
+            return type.ToDisplayString(FqFormat);
+        }
+
         private static void GenerateTransformedMethod(
             StringBuilder sb,
             MethodDeclarationSyntax method,
+            Compilation compilation,
             string indent,
-            System.Collections.Generic.HashSet<string> continuableMethodNames)
+            HashSet<string> continuableMethodNames)
         {
+            var model = compilation.GetSemanticModel(method.SyntaxTree);
             var methodName = method.Identifier.Text;
-            var returnType = method.ReturnType.ToString();
-            var parameters = method.ParameterList.ToString();
+            var returnType = GetReturnType(method, model);
+            var parameters = BuildParameterList(method, model);
             var isVoid = returnType == "void";
-            var methodToken = GenerateMethodToken(method);
+            var methodToken = GenerateMethodToken(method, model);
 
+            var hoist = HoistedLocals.Collect(method, model);
             var analyzer = new YieldPointAnalyzer();
             var yieldPoints = analyzer.FindYieldPoints(method);
-            var locals = GetLocalVariables(method);
 
             sb.AppendLine();
             sb.AppendLine($"{indent}/// <summary>");
             sb.AppendLine($"{indent}/// Continuation-enabled version of {methodName}.");
             sb.AppendLine($"{indent}/// Supports suspension at {yieldPoints.Count} yield point(s).");
             sb.AppendLine($"{indent}/// </summary>");
-            sb.AppendLine($"{indent}public {returnType} {methodName}_Continuable{parameters}");
+            sb.AppendLine($"{indent}public {returnType} {methodName}_Continuable({parameters})");
             sb.AppendLine($"{indent}{{");
 
-            GenerateStateMachineBody(sb, method, yieldPoints, locals, methodToken, indent + "    ", isVoid, returnType, continuableMethodNames);
+            GenerateStateMachineBody(sb, method, model, hoist, yieldPoints, methodToken, indent + "    ", isVoid, returnType, continuableMethodNames);
 
             sb.AppendLine($"{indent}}}");
         }
@@ -217,21 +362,23 @@ namespace Prim.Roslyn
         private static void GenerateStaticTransformedMethod(
             StringBuilder sb,
             MethodDeclarationSyntax method,
+            Compilation compilation,
             string originalTypeName,
             string indent,
-            System.Collections.Generic.HashSet<string> continuableMethodNames)
+            HashSet<string> continuableMethodNames)
         {
+            var model = compilation.GetSemanticModel(method.SyntaxTree);
             var methodName = method.Identifier.Text;
-            var returnType = method.ReturnType.ToString();
+            var returnType = GetReturnType(method, model);
             var isStatic = method.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
             var isVoid = returnType == "void";
-            var methodToken = GenerateMethodToken(method);
+            var methodToken = GenerateMethodToken(method, model);
 
+            var hoist = HoistedLocals.Collect(method, model);
             var analyzer = new YieldPointAnalyzer();
             var yieldPoints = analyzer.FindYieldPoints(method);
-            var locals = GetLocalVariables(method);
 
-            var paramList = method.ParameterList.Parameters.ToString();
+            var paramList = BuildParameterList(method, model);
             if (!isStatic)
             {
                 paramList = string.IsNullOrWhiteSpace(paramList)
@@ -247,45 +394,80 @@ namespace Prim.Roslyn
             sb.AppendLine($"{indent}public static {returnType} {methodName}_Continuable({paramList})");
             sb.AppendLine($"{indent}{{");
 
-            GenerateStateMachineBody(sb, method, yieldPoints, locals, methodToken, indent + "    ", isVoid, returnType, continuableMethodNames);
+            GenerateStateMachineBody(sb, method, model, hoist, yieldPoints, methodToken, indent + "    ", isVoid, returnType, continuableMethodNames);
 
             sb.AppendLine($"{indent}}}");
+        }
+
+        /// <summary>
+        /// Builds the parameter list using fully-qualified parameter types (#25).
+        /// </summary>
+        private static string BuildParameterList(MethodDeclarationSyntax method, SemanticModel model)
+        {
+            var parts = new List<string>();
+            foreach (var p in method.ParameterList.Parameters)
+            {
+                var modifiers = string.Join(" ", p.Modifiers.Select(m => m.Text));
+                var typeStr = "object";
+                if (p.Type != null)
+                {
+                    var t = model.GetTypeInfo(p.Type).Type;
+                    typeStr = t != null && t.TypeKind != TypeKind.Error ? DisplayType(t) : p.Type.ToString();
+                }
+                var defaultClause = p.Default != null ? $" {p.Default}" : "";
+                var prefix = string.IsNullOrEmpty(modifiers) ? "" : modifiers + " ";
+                parts.Add($"{prefix}{typeStr} {p.Identifier.Text}{defaultClause}");
+            }
+            return string.Join(", ", parts);
+        }
+
+        /// <summary>
+        /// Resolves the return type to a fully-qualified name (#25).
+        /// </summary>
+        private static string GetReturnType(MethodDeclarationSyntax method, SemanticModel model)
+        {
+            var symbol = model.GetDeclaredSymbol(method);
+            if (symbol != null)
+            {
+                if (symbol.ReturnsVoid) return "void";
+                return DisplayType(symbol.ReturnType);
+            }
+            return method.ReturnType.ToString();
         }
 
         private static void GenerateStateMachineBody(
             StringBuilder sb,
             MethodDeclarationSyntax method,
-            System.Collections.Generic.List<YieldPointInfo> yieldPoints,
-            System.Collections.Generic.List<(string name, string type)> locals,
+            SemanticModel model,
+            HoistedLocals hoist,
+            List<YieldPointInfo> yieldPoints,
             int methodToken,
             string indent,
             bool isVoid,
             string returnType,
-            System.Collections.Generic.HashSet<string> continuableMethodNames)
+            HashSet<string> continuableMethodNames)
         {
-            // Get try block information
             var analyzer = new YieldPointAnalyzer();
             var (_, tryBlocks) = analyzer.FindYieldPointsAndTryBlocks(method);
+
+            var locals = hoist.Slots; // ordered (synthetic name, fq type)
 
             sb.AppendLine($"{indent}var __context = ScriptContext.EnsureCurrent();");
             sb.AppendLine($"{indent}const int __methodToken = {methodToken};");
             sb.AppendLine($"{indent}int __state = 0;");
 
-            // Track which try block we're resuming into (for try-catch-finally support)
             if (tryBlocks.Count > 0)
             {
                 sb.AppendLine($"{indent}int __tryBlockState = -1; // Which try block to resume into (-1 = none)");
             }
             sb.AppendLine();
 
-            // Declare all locals at outer scope
             foreach (var local in locals)
             {
                 sb.AppendLine($"{indent}{local.type} {local.name} = default({local.type});");
             }
             sb.AppendLine();
 
-            // Restore block - set state from frame
             sb.AppendLine($"{indent}// Restore state if resuming");
             sb.AppendLine($"{indent}if (__context.IsRestoring && __context.FrameChain?.MethodToken == __methodToken)");
             sb.AppendLine($"{indent}{{");
@@ -294,14 +476,12 @@ namespace Prim.Roslyn
             sb.AppendLine($"{indent}    __state = __frame.YieldPointId + 1; // Resume after yield point");
             sb.AppendLine();
 
-            // Restore locals from slots
             for (int i = 0; i < locals.Count; i++)
             {
                 var local = locals[i];
                 sb.AppendLine($"{indent}    {local.name} = FrameCapture.GetSlot<{local.type}>(__frame.Slots, {i});");
             }
 
-            // Restore try block state if present (stored in an extra slot)
             if (tryBlocks.Count > 0 && locals.Count > 0)
             {
                 sb.AppendLine();
@@ -316,22 +496,27 @@ namespace Prim.Roslyn
             sb.AppendLine($"{indent}}}");
             sb.AppendLine();
 
-            // Try block with state machine
             sb.AppendLine($"{indent}try");
             sb.AppendLine($"{indent}{{");
-
-            // For now, generate a simplified version that just calls the original method
-            // A full implementation would transform the body into a state machine
             sb.AppendLine($"{indent}    // State machine implementation");
             sb.AppendLine($"{indent}    // Supports try-catch-finally blocks and nested method calls.");
             sb.AppendLine();
 
-            // Generate simplified body with yield checks
-            GenerateSimplifiedBody(sb, method, yieldPoints, tryBlocks, indent + "    ", continuableMethodNames);
+            var ctx = new BodyGenerationContext
+            {
+                YieldPointIndex = 0,
+                TryBlockIndex = 0,
+                TryBlocks = tryBlocks,
+                YieldPoints = yieldPoints,
+                ContinuableMethodNames = continuableMethodNames,
+                Hoist = hoist,
+                Model = model
+            };
+
+            GenerateStatements(sb, method.Body.Statements, ctx, indent + "    ");
 
             sb.AppendLine($"{indent}}}");
 
-            // Catch block for state capture
             sb.AppendLine($"{indent}catch (SuspendException __ex)");
             sb.AppendLine($"{indent}{{");
             sb.Append($"{indent}    var __slots = FrameCapture.PackSlots(");
@@ -354,43 +539,135 @@ namespace Prim.Roslyn
             sb.AppendLine($"{indent}}}");
         }
 
-        private static void GenerateSimplifiedBody(
-            StringBuilder sb,
-            MethodDeclarationSyntax method,
-            System.Collections.Generic.List<YieldPointInfo> yieldPoints,
-            System.Collections.Generic.List<TryBlockInfo> tryBlocks,
-            string indent,
-            System.Collections.Generic.HashSet<string> continuableMethodNames)
+        // ----------------------------------------------------------------------------
+        // Hoisted local collection + symbol-aware renaming (#25, #27, #29)
+        // ----------------------------------------------------------------------------
+
+        /// <summary>
+        /// Collects every local that must be hoisted into the prologue for slot
+        /// capture/restore, gives each a UNIQUE synthetic name, and records a mapping
+        /// from the local's symbol to that name so all references can be remapped.
+        ///
+        /// Collected up front (so slot indices are stable): local declarations in ALL
+        /// nested scopes, catch-clause variables, and using-statement/declaration
+        /// resource variables (#29). Loop iteration variables (for / foreach) are NOT
+        /// hoisted: the simplified resume model re-runs loops from their header, so the
+        /// loop variable is re-created each run and stays loop-scoped.
+        /// </summary>
+        private sealed class HoistedLocals
         {
-            var body = method.Body;
-            if (body == null)
+            // symbol -> synthetic name
+            private readonly Dictionary<ISymbol, string> _bySymbol =
+                new Dictionary<ISymbol, string>(SymbolEqualityComparer.Default);
+
+            public List<(string name, string type)> Slots { get; } = new List<(string name, string type)>();
+
+            public bool TryGetName(ISymbol symbol, out string name) => _bySymbol.TryGetValue(symbol, out name);
+
+            public static HoistedLocals Collect(MethodDeclarationSyntax method, SemanticModel model)
             {
-                // Expression-bodied method
-                var arrow = method.ExpressionBody;
-                if (arrow != null)
+                var result = new HoistedLocals();
+                if (method.Body == null) return result;
+
+                int index = 0;
+                string Synth(string original) => $"__l{index++}_{original}";
+
+                void AddSymbol(ISymbol symbol, string original, ITypeSymbol type)
                 {
-                    var exprText = TransformContinuableMethodCalls(arrow.Expression.ToString(), continuableMethodNames);
-                    sb.AppendLine($"{indent}return {exprText};");
+                    if (symbol == null) return;
+                    if (result._bySymbol.ContainsKey(symbol)) return;
+                    var name = Synth(original);
+                    result._bySymbol[symbol] = name;
+                    result.Slots.Add((name, DisplayType(type)));
                 }
-                return;
+
+                foreach (var node in method.Body.DescendantNodes())
+                {
+                    switch (node)
+                    {
+                        case LocalDeclarationStatementSyntax localDecl:
+                        {
+                            // Includes `using var x = ...;` (using declarations) (#29).
+                            foreach (var v in localDecl.Declaration.Variables)
+                            {
+                                var sym = model.GetDeclaredSymbol(v) as ILocalSymbol;
+                                AddSymbol(sym, v.Identifier.Text, sym?.Type);
+                            }
+                            break;
+                        }
+                        case UsingStatementSyntax usingStmt when usingStmt.Declaration != null:
+                        {
+                            // `using (var x = ...) { }` resource locals (#29).
+                            foreach (var v in usingStmt.Declaration.Variables)
+                            {
+                                var sym = model.GetDeclaredSymbol(v) as ILocalSymbol;
+                                AddSymbol(sym, v.Identifier.Text, sym?.Type);
+                            }
+                            break;
+                        }
+                        case CatchDeclarationSyntax catchDecl when !catchDecl.Identifier.IsKind(SyntaxKind.None) &&
+                                                                    !string.IsNullOrEmpty(catchDecl.Identifier.Text):
+                        {
+                            var sym = model.GetDeclaredSymbol(catchDecl) as ILocalSymbol;
+                            AddSymbol(sym, catchDecl.Identifier.Text, sym?.Type);
+                            break;
+                        }
+                    }
+                }
+
+                return result;
             }
-
-            var context = new BodyGenerationContext
-            {
-                YieldPointIndex = 0,
-                TryBlockIndex = 0,
-                TryBlocks = tryBlocks,
-                YieldPoints = yieldPoints,
-                ContinuableMethodNames = continuableMethodNames
-            };
-
-            GenerateStatements(sb, body.Statements, context, indent);
         }
 
         /// <summary>
-        /// Transforms method calls to [Continuable] methods to their _Continuable versions.
+        /// Rewrites identifier references to hoisted locals to their synthetic names,
+        /// using symbol identity (so sibling-scope locals that share a source name are
+        /// disambiguated). Returns the rewritten source text for a syntax fragment.
         /// </summary>
-        private static string TransformContinuableMethodCalls(string code, System.Collections.Generic.HashSet<string> continuableMethodNames)
+        private static string RenderWithRenames(SyntaxNode node, BodyGenerationContext ctx)
+        {
+            if (node == null) return "";
+            var rewriter = new LocalRenamer(ctx.Model, ctx.Hoist);
+            var rewritten = rewriter.Visit(node);
+            var text = rewritten.ToFullString();
+            return TransformContinuableMethodCalls(text.Trim(), ctx.ContinuableMethodNames);
+        }
+
+        private sealed class LocalRenamer : CSharpSyntaxRewriter
+        {
+            private readonly SemanticModel _model;
+            private readonly HoistedLocals _hoist;
+
+            public LocalRenamer(SemanticModel model, HoistedLocals hoist)
+            {
+                _model = model;
+                _hoist = hoist;
+            }
+
+            public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
+            {
+                var symbol = _model.GetSymbolInfo(node).Symbol;
+                if (symbol != null && _hoist.TryGetName(symbol, out var newName))
+                {
+                    return node.WithIdentifier(
+                        SyntaxFactory.Identifier(newName).WithTriviaFrom(node.Identifier));
+                }
+                return base.VisitIdentifierName(node);
+            }
+        }
+
+        private class BodyGenerationContext
+        {
+            public int YieldPointIndex { get; set; }
+            public int TryBlockIndex { get; set; }
+            public List<TryBlockInfo> TryBlocks { get; set; }
+            public List<YieldPointInfo> YieldPoints { get; set; }
+            public HashSet<string> ContinuableMethodNames { get; set; }
+            public HoistedLocals Hoist { get; set; }
+            public SemanticModel Model { get; set; }
+        }
+
+        private static string TransformContinuableMethodCalls(string code, HashSet<string> continuableMethodNames)
         {
             if (continuableMethodNames == null || continuableMethodNames.Count == 0)
                 return code;
@@ -398,28 +675,12 @@ namespace Prim.Roslyn
             var result = code;
             foreach (var methodName in continuableMethodNames)
             {
-                // Replace method calls like "MethodName(" with "MethodName_Continuable("
-                // This is a simple text replacement - handles common cases
                 result = System.Text.RegularExpressions.Regex.Replace(
                     result,
                     $@"\b{methodName}\s*\(",
                     $"{methodName}_Continuable(");
             }
             return result;
-        }
-
-        private class BodyGenerationContext
-        {
-            public int YieldPointIndex { get; set; }
-            public int TryBlockIndex { get; set; }
-            public System.Collections.Generic.List<TryBlockInfo> TryBlocks { get; set; }
-            public System.Collections.Generic.List<YieldPointInfo> YieldPoints { get; set; }
-
-            /// <summary>
-            /// Set of method names in this type that are marked [Continuable].
-            /// Used to transform calls to these methods to their _Continuable versions.
-            /// </summary>
-            public System.Collections.Generic.HashSet<string> ContinuableMethodNames { get; set; }
         }
 
         private static void GenerateStatements(
@@ -440,20 +701,17 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            // Check if this is a loop statement - add yield point before
             if (statement is WhileStatementSyntax ||
                 statement is ForStatementSyntax ||
                 statement is ForEachStatementSyntax ||
                 statement is DoStatementSyntax)
             {
-                // Estimate cost based on loop body size (1 per statement, minimum 1)
                 var loopCost = EstimateStatementCost(statement);
                 sb.AppendLine($"{indent}// Yield point {context.YieldPointIndex} (loop, cost={loopCost})");
                 sb.AppendLine($"{indent}__context.HandleYieldPointWithBudget({context.YieldPointIndex}, {loopCost});");
                 context.YieldPointIndex++;
             }
 
-            // Check for nested continuable method calls (calls to other [Continuable] methods)
             var nestedCall = FindContinuableMethodCall(statement, context.ContinuableMethodNames);
             if (nestedCall != null)
             {
@@ -461,7 +719,6 @@ namespace Prim.Roslyn
                 return;
             }
 
-            // Handle different statement types
             switch (statement)
             {
                 case TryStatementSyntax tryStatement:
@@ -469,17 +726,20 @@ namespace Prim.Roslyn
                     break;
 
                 case LocalDeclarationStatementSyntax localDecl:
-                    // Don't redeclare - just assign
+                    // Hoisted: emit assignment only (declaration is in the prologue).
                     foreach (var variable in localDecl.Declaration.Variables)
                     {
                         if (variable.Initializer != null)
                         {
-                            var initText = TransformContinuableMethodCalls(
-                                variable.Initializer.Value.ToString(),
-                                context.ContinuableMethodNames);
-                            sb.AppendLine($"{indent}{variable.Identifier.Text} = {initText};");
+                            var name = ResolveHoistedName(variable, context);
+                            var initText = RenderWithRenames(variable.Initializer.Value, context);
+                            sb.AppendLine($"{indent}{name} = {initText};");
                         }
                     }
+                    break;
+
+                case UsingStatementSyntax usingStatement:
+                    GenerateUsingStatement(sb, usingStatement, context, indent);
                     break;
 
                 case BlockSyntax block:
@@ -509,24 +769,40 @@ namespace Prim.Roslyn
                     break;
 
                 default:
-                    // Output the statement with continuable method calls transformed
-                    var stmtText = TransformContinuableMethodCalls(
-                        statement.ToFullString().TrimEnd(),
-                        context.ContinuableMethodNames);
+                    var stmtText = RenderWithRenames(statement, context);
                     sb.AppendLine($"{indent}{stmtText}");
                     break;
             }
         }
 
         /// <summary>
-        /// Finds a continuable method call within a statement (calls to [Continuable] methods).
+        /// For a hoisted local declarator, returns its synthetic name; falls back to the
+        /// source name (should not happen for collected locals).
         /// </summary>
+        private static string ResolveHoistedName(VariableDeclaratorSyntax variable, BodyGenerationContext context)
+        {
+            var sym = context.Model.GetDeclaredSymbol(variable);
+            if (sym != null && context.Hoist.TryGetName(sym, out var name))
+                return name;
+            return variable.Identifier.Text;
+        }
+
         private static InvocationExpressionSyntax FindContinuableMethodCall(
             StatementSyntax statement,
-            System.Collections.Generic.HashSet<string> continuableMethodNames)
+            HashSet<string> continuableMethodNames)
         {
             if (continuableMethodNames == null || continuableMethodNames.Count == 0)
                 return null;
+
+            // Only look at the statement's own expression, not nested loop/try bodies
+            // (those are recursed into separately).
+            if (statement is BlockSyntax || statement is TryStatementSyntax ||
+                statement is IfStatementSyntax || statement is WhileStatementSyntax ||
+                statement is ForStatementSyntax || statement is ForEachStatementSyntax ||
+                statement is DoStatementSyntax || statement is UsingStatementSyntax)
+            {
+                return null;
+            }
 
             foreach (var invocation in statement.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {
@@ -549,9 +825,6 @@ namespace Prim.Roslyn
             };
         }
 
-        /// <summary>
-        /// Generates code for a statement containing a nested continuable method call.
-        /// </summary>
         private static void GenerateNestedMethodCallStatement(
             StringBuilder sb,
             StatementSyntax statement,
@@ -565,61 +838,39 @@ namespace Prim.Roslyn
             sb.AppendLine();
             sb.AppendLine($"{indent}// Yield point {yieldPointId} (nested call to {methodName})");
 
-            // Handle different statement types with nested calls
             switch (statement)
             {
                 case LocalDeclarationStatementSyntax localDecl:
-                    // var result = SomeMethod();
-                    // The variable is already declared at the outer scope
-                    // Transform to call _Continuable version
                     foreach (var variable in localDecl.Declaration.Variables)
                     {
                         if (variable.Initializer != null)
                         {
-                            var varName = variable.Identifier.Text;
-                            var initText = TransformContinuableMethodCalls(
-                                variable.Initializer.Value.ToString(),
-                                context.ContinuableMethodNames);
-                            sb.AppendLine($"{indent}// Nested call: {varName} = {methodName}_Continuable(...)");
+                            var varName = ResolveHoistedName(variable, context);
+                            var initText = RenderWithRenames(variable.Initializer.Value, context);
                             sb.AppendLine($"{indent}{varName} = {initText};");
                         }
                     }
                     break;
 
                 case ExpressionStatementSyntax exprStatement:
-                    // Could be assignment or just invocation
-                    var exprText = TransformContinuableMethodCalls(
-                        exprStatement.ToFullString().TrimEnd(),
-                        context.ContinuableMethodNames);
-                    if (exprStatement.Expression is AssignmentExpressionSyntax assignment)
-                    {
-                        // result = SomeMethod();
-                        sb.AppendLine($"{indent}// Nested call: {assignment.Left} = {methodName}_Continuable(...)");
-                        sb.AppendLine($"{indent}{exprText}");
-                    }
-                    else
-                    {
-                        // Just a method call: SomeMethod();
-                        sb.AppendLine($"{indent}// Nested call: {methodName}_Continuable(...)");
-                        sb.AppendLine($"{indent}{exprText}");
-                    }
+                    var exprText = RenderWithRenames(exprStatement.Expression, context);
+                    sb.AppendLine($"{indent}{exprText};");
                     break;
 
                 case ReturnStatementSyntax returnStatement:
-                    // return SomeMethod();
-                    var returnText = TransformContinuableMethodCalls(
-                        returnStatement.ToFullString().TrimEnd(),
-                        context.ContinuableMethodNames);
-                    sb.AppendLine($"{indent}// Nested call in return: {methodName}_Continuable(...)");
-                    sb.AppendLine($"{indent}{returnText}");
+                    if (returnStatement.Expression != null)
+                    {
+                        var returnText = RenderWithRenames(returnStatement.Expression, context);
+                        sb.AppendLine($"{indent}return {returnText};");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{indent}return;");
+                    }
                     break;
 
                 default:
-                    // Fallback: output the statement with transformation
-                    var stmtText = TransformContinuableMethodCalls(
-                        statement.ToFullString().TrimEnd(),
-                        context.ContinuableMethodNames);
-                    sb.AppendLine($"{indent}// Nested call (unhandled statement type): {methodName}_Continuable(...)");
+                    var stmtText = RenderWithRenames(statement, context);
                     sb.AppendLine($"{indent}{stmtText}");
                     break;
             }
@@ -640,38 +891,30 @@ namespace Prim.Roslyn
             sb.AppendLine();
             sb.AppendLine($"{indent}// Try block {tryBlockId} (hasFinally={hasFinally}, hasCatch={hasCatch})");
 
-            // Track which try block we're in for state capture
             if (context.TryBlocks.Count > 0)
             {
                 sb.AppendLine($"{indent}__tryBlockState = {tryBlockId};");
             }
 
-            // Generate the try block
             sb.AppendLine($"{indent}try");
             sb.AppendLine($"{indent}{{");
             GenerateStatements(sb, tryStatement.Block.Statements, context, indent + "    ");
             sb.AppendLine($"{indent}}}");
 
-            // Generate catch clauses
             foreach (var catchClause in tryStatement.Catches)
             {
                 GenerateCatchClause(sb, catchClause, context, indent);
             }
 
-            // Generate finally block
             if (tryStatement.Finally != null)
             {
                 sb.AppendLine($"{indent}finally");
                 sb.AppendLine($"{indent}{{");
-
-                // Check if we're suspending - if so, the SuspendException has already
-                // propagated through and we just need to let the finally run naturally
                 sb.AppendLine($"{indent}    // Finally block executes on both normal completion and suspension");
                 GenerateStatements(sb, tryStatement.Finally.Block.Statements, context, indent + "    ");
                 sb.AppendLine($"{indent}}}");
             }
 
-            // Reset try block tracking after exiting
             if (context.TryBlocks.Count > 0)
             {
                 sb.AppendLine($"{indent}__tryBlockState = -1;");
@@ -686,29 +929,132 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
+            // Index of this clause within its try, so sibling catches get distinct
+            // synthetic guard names rather than relying on catch-scope isolation (#27).
+            var clauseIndex = (catchClause.Parent as TryStatementSyntax)?.Catches.IndexOf(catchClause) ?? 0;
+
             var declaration = catchClause.Declaration;
             if (declaration != null)
             {
-                var exType = declaration.Type.ToString();
-                var varName = declaration.Identifier.Text;
+                var exTypeSymbol = context.Model.GetTypeInfo(declaration.Type).Type;
+                var exType = exTypeSymbol != null && exTypeSymbol.TypeKind != TypeKind.Error
+                    ? DisplayType(exTypeSymbol)
+                    : declaration.Type.ToString();
 
-                // If no variable name in the declaration (e.g., catch (Exception)), create one
-                if (string.IsNullOrEmpty(varName))
+                string varName;
+                if (string.IsNullOrEmpty(declaration.Identifier.Text))
                 {
-                    varName = "__catchEx";
+                    // Anonymous catch: synthesize a guard name unique among sibling
+                    // catches of the same try (the clause index disambiguates).
+                    varName = $"__catchEx{context.TryBlockIndex}_{clauseIndex}";
+                }
+                else
+                {
+                    var sym = context.Model.GetDeclaredSymbol(catchClause.Declaration);
+                    varName = (sym != null && context.Hoist.TryGetName(sym, out var n))
+                        ? n
+                        : declaration.Identifier.Text;
                 }
 
-                // Don't catch SuspendException - let it propagate
-                sb.AppendLine($"{indent}catch ({exType} {varName}) when (!({varName} is SuspendException))");
+                // Only inject the SuspendException-escape filter when this catch could
+                // actually catch a SuspendException; on an unrelated typed catch the
+                // 'is SuspendException' test is provably false and yields a CS0184
+                // warning in consumer code (#23 follow-up).
+                if (CatchCanCatchSuspend(exTypeSymbol, context))
+                {
+                    sb.AppendLine($"{indent}catch ({exType} {varName}) when (!({varName} is SuspendException))");
+                }
+                else
+                {
+                    sb.AppendLine($"{indent}catch ({exType} {varName})");
+                }
             }
             else
             {
-                // Bare catch clause - need a filter to avoid catching SuspendException
-                sb.AppendLine($"{indent}catch (Exception __catchEx) when (!(__catchEx is SuspendException))");
+                // Bare catch catches everything (including SuspendException), so the
+                // escape filter is always required here.
+                var guard = $"__catchEx{context.TryBlockIndex}_{clauseIndex}";
+                sb.AppendLine($"{indent}catch (Exception {guard}) when (!({guard} is SuspendException))");
             }
 
             sb.AppendLine($"{indent}{{");
             GenerateStatements(sb, catchClause.Block.Statements, context, indent + "    ");
+            sb.AppendLine($"{indent}}}");
+        }
+
+        /// <summary>
+        /// Returns true if a catch of <paramref name="catchType"/> could actually catch a
+        /// SuspendException (i.e. SuspendException is or derives from the catch type). Used
+        /// to decide whether the 'when (!(x is SuspendException))' escape filter is needed;
+        /// emitting it on an unrelated typed catch produces a provably-false test (CS0184).
+        /// </summary>
+        private static bool CatchCanCatchSuspend(ITypeSymbol catchType, BodyGenerationContext context)
+        {
+            // Unknown/error type: be safe and keep the filter.
+            if (catchType == null || catchType.TypeKind == TypeKind.Error) return true;
+
+            var suspend = context.Model.Compilation.GetTypeByMetadataName("Prim.Core.SuspendException");
+            if (suspend == null) return true; // can't resolve; keep the filter defensively.
+
+            for (var t = suspend; t != null; t = t.BaseType)
+            {
+                if (SymbolEqualityComparer.Default.Equals(t, catchType)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Generates a using-statement as an explicit try/finally that disposes the
+        /// hoisted resource local (#29). The resource local is declared+counted in the
+        /// prologue, so slot indexing is never corrupted by late additions.
+        /// </summary>
+        private static void GenerateUsingStatement(
+            StringBuilder sb,
+            UsingStatementSyntax usingStatement,
+            BodyGenerationContext context,
+            string indent)
+        {
+            var disposeNames = new List<string>();
+
+            if (usingStatement.Declaration != null)
+            {
+                foreach (var v in usingStatement.Declaration.Variables)
+                {
+                    var name = ResolveHoistedName(v, context);
+                    if (v.Initializer != null)
+                    {
+                        var initText = RenderWithRenames(v.Initializer.Value, context);
+                        sb.AppendLine($"{indent}{name} = {initText};");
+                    }
+                    disposeNames.Add(name);
+                }
+            }
+            else if (usingStatement.Expression != null)
+            {
+                // using (expr) { }  -- expression-only resource; capture into a temp.
+                var tmp = $"__using{context.TryBlockIndex}_{context.YieldPointIndex}";
+                var exprText = RenderWithRenames(usingStatement.Expression, context);
+                sb.AppendLine($"{indent}System.IDisposable {tmp} = {exprText};");
+                disposeNames.Add(tmp);
+            }
+
+            sb.AppendLine($"{indent}try");
+            sb.AppendLine($"{indent}{{");
+            if (usingStatement.Statement is BlockSyntax usingBlock)
+            {
+                GenerateStatements(sb, usingBlock.Statements, context, indent + "    ");
+            }
+            else
+            {
+                GenerateStatement(sb, usingStatement.Statement, context, indent + "    ");
+            }
+            sb.AppendLine($"{indent}}}");
+            sb.AppendLine($"{indent}finally");
+            sb.AppendLine($"{indent}{{");
+            foreach (var name in disposeNames)
+            {
+                sb.AppendLine($"{indent}    ((System.IDisposable){name})?.Dispose();");
+            }
             sb.AppendLine($"{indent}}}");
         }
 
@@ -718,7 +1064,8 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            sb.AppendLine($"{indent}if ({ifStatement.Condition})");
+            var conditionText = RenderWithRenames(ifStatement.Condition, context);
+            sb.AppendLine($"{indent}if ({conditionText})");
             if (ifStatement.Statement is BlockSyntax block)
             {
                 sb.AppendLine($"{indent}{{");
@@ -752,7 +1099,8 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            sb.AppendLine($"{indent}while ({whileStatement.Condition})");
+            var conditionText = RenderWithRenames(whileStatement.Condition, context);
+            sb.AppendLine($"{indent}while ({conditionText})");
             if (whileStatement.Statement is BlockSyntax block)
             {
                 sb.AppendLine($"{indent}{{");
@@ -771,12 +1119,14 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            var decl = forStatement.Declaration?.ToString() ?? "";
-            var initializers = string.Join(", ", forStatement.Initializers.Select(i => i.ToString()));
-            var condition = forStatement.Condition?.ToString() ?? "";
-            var incrementors = string.Join(", ", forStatement.Incrementors.Select(i => i.ToString()));
+            // The for-loop control variable stays loop-scoped (re-run model). Render the
+            // header with hoisted-local renames applied to any references.
+            var initPart = forStatement.Declaration != null
+                ? RenderWithRenames(forStatement.Declaration, context)
+                : string.Join(", ", forStatement.Initializers.Select(i => RenderWithRenames(i, context)));
+            var condition = forStatement.Condition != null ? RenderWithRenames(forStatement.Condition, context) : "";
+            var incrementors = string.Join(", ", forStatement.Incrementors.Select(i => RenderWithRenames(i, context)));
 
-            var initPart = !string.IsNullOrEmpty(decl) ? decl : initializers;
             sb.AppendLine($"{indent}for ({initPart}; {condition}; {incrementors})");
 
             if (forStatement.Statement is BlockSyntax block)
@@ -797,7 +1147,31 @@ namespace Prim.Roslyn
             BodyGenerationContext context,
             string indent)
         {
-            sb.AppendLine($"{indent}foreach ({foreachStatement.Type} {foreachStatement.Identifier} in {foreachStatement.Expression})");
+            // Resolve element + collection types via the semantic model (#25). The
+            // iteration variable stays loop-scoped: like the 'for' case, the simplified
+            // resume model re-runs the loop from its header, so the enumerator is
+            // re-created and MoveNext is NOT re-called mid-iteration on resume -- the
+            // whole loop is replayed against the (restored) hoisted locals (#28). This
+            // is consistent with how 'for' resumes and does not skip elements.
+            var info = context.Model.GetForEachStatementInfo(foreachStatement);
+            string elementType;
+            if (foreachStatement.Type.IsVar)
+            {
+                var elemSym = info.ElementType;
+                elementType = elemSym != null && elemSym.TypeKind != TypeKind.Error
+                    ? DisplayType(elemSym)
+                    : "var";
+            }
+            else
+            {
+                var t = context.Model.GetTypeInfo(foreachStatement.Type).Type;
+                elementType = t != null && t.TypeKind != TypeKind.Error
+                    ? DisplayType(t)
+                    : foreachStatement.Type.ToString();
+            }
+
+            var collectionText = RenderWithRenames(foreachStatement.Expression, context);
+            sb.AppendLine($"{indent}foreach ({elementType} {foreachStatement.Identifier.Text} in {collectionText})");
 
             if (foreachStatement.Statement is BlockSyntax block)
             {
@@ -828,52 +1202,22 @@ namespace Prim.Roslyn
             {
                 GenerateStatement(sb, doStatement.Statement, context, indent + "    ");
             }
-            sb.AppendLine($"{indent}while ({doStatement.Condition});");
+            var conditionText = RenderWithRenames(doStatement.Condition, context);
+            sb.AppendLine($"{indent}while ({conditionText});");
         }
 
-        private static System.Collections.Generic.List<(string name, string type)> GetLocalVariables(MethodDeclarationSyntax method)
-        {
-            var locals = new System.Collections.Generic.List<(string name, string type)>();
-
-            if (method.Body == null) return locals;
-
-            foreach (var statement in method.Body.Statements)
-            {
-                if (statement is LocalDeclarationStatementSyntax localDecl)
-                {
-                    var typeName = localDecl.Declaration.Type.ToString();
-                    // Handle var keyword
-                    if (typeName == "var")
-                    {
-                        typeName = "object"; // Simplified - real impl would infer type
-                    }
-                    foreach (var variable in localDecl.Declaration.Variables)
-                    {
-                        locals.Add((variable.Identifier.Text, typeName));
-                    }
-                }
-            }
-
-            return locals;
-        }
-
-        /// <summary>
-        /// Estimates the instruction cost of a statement for budget tracking.
-        /// </summary>
         private static int EstimateStatementCost(StatementSyntax statement)
         {
-            // Count child nodes as a rough proxy for instruction count
-            // This is approximate but provides reasonable fairness
             var nodeCount = statement.DescendantNodes().Count();
-
-            // Minimum cost of 1, cap at reasonable maximum
             return System.Math.Max(1, System.Math.Min(nodeCount, 100));
         }
 
-        private static int GenerateMethodToken(MethodDeclarationSyntax method)
+        private static int GenerateMethodToken(MethodDeclarationSyntax method, SemanticModel model)
         {
             var typeName = GetFullTypeName(method);
             var methodName = method.Identifier.Text;
+            // Use the SYNTAX type text for param types to keep tokens stable with the
+            // pre-existing e2e expectations (CountToTenMethodToken constant in tests).
             var paramTypes = method.ParameterList.Parameters
                 .Select(p => p.Type?.ToString() ?? "")
                 .ToArray();
@@ -881,10 +1225,6 @@ namespace Prim.Roslyn
             return StableHashFnv1a(typeName, methodName, paramTypes);
         }
 
-        /// <summary>
-        /// Computes a stable FNV-1a hash for method identification.
-        /// This must match StableHash.GenerateMethodToken in Prim.Core.
-        /// </summary>
         private static int StableHashFnv1a(string typeName, string methodName, string[] paramTypes)
         {
             unchecked

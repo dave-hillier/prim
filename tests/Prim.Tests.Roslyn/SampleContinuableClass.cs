@@ -263,5 +263,130 @@ namespace Prim.Tests.Roslyn
         }
 
         #endregion
+
+        #region Batch 5 Feature Tests (#25 var types, #27 sibling-local dedup, #28 foreach, #29 using)
+
+        /// <summary>
+        /// Uses a 'var' local of a non-trivial type (System.Text.StringBuilder).
+        /// Exercises #25: the generator must resolve the var's type via the semantic
+        /// model and emit a fully-qualified type for the hoisted slot.
+        /// </summary>
+        [Continuable]
+        public int VarLocalOfNonTrivialType()
+        {
+            var builder = new System.Text.StringBuilder();
+            for (int i = 0; i < 4; i++)
+            {
+                builder.Append('x');
+            }
+            return builder.Length; // 4
+        }
+
+        /// <summary>
+        /// Two sibling-scope locals both named 'i' (legal C#). Exercises #27: each
+        /// hoisted local must get a unique synthetic name so they do not collide
+        /// (CS0128) in the generated prologue.
+        /// </summary>
+        [Continuable]
+        public int SiblingScopeLocalsSameName()
+        {
+            int total = 0;
+            {
+                int i = 10;
+                total += i;
+            }
+            {
+                int i = 20;
+                total += i;
+            }
+            return total; // 30
+        }
+
+        /// <summary>
+        /// A foreach over an int array with a loop-body local. Exercises #25 (element
+        /// type resolution) and #28 (foreach generates compiling, correctly typed code
+        /// and replays cleanly).
+        /// </summary>
+        [Continuable]
+        public int ForEachSum()
+        {
+            int sum = 0;
+            int[] numbers = new int[] { 1, 2, 3, 4 };
+            foreach (var n in numbers)
+            {
+                sum += n;
+            }
+            return sum; // 10
+        }
+
+        /// <summary>
+        /// A while loop with a body-local. Exercises hoisting of a nested local plus
+        /// the loop back-edge yield point.
+        /// </summary>
+        [Continuable]
+        public int WhileWithLocal()
+        {
+            int sum = 0;
+            int n = 0;
+            while (n < 5)
+            {
+                int step = n + 1;
+                sum += step;
+                n++;
+            }
+            return sum; // 1+2+3+4+5 = 15
+        }
+
+        /// <summary>
+        /// A using statement whose resource local must be collected up front (#29).
+        /// Exercises correct dispose-in-finally semantics.
+        /// </summary>
+        [Continuable]
+        public int UsingStatementMethod()
+        {
+            int result = 0;
+            using (var resource = new TrackedDisposable())
+            {
+                result = resource.Value; // 42
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// A try with two sibling typed catch clauses. Exercises that sibling catches
+        /// get distinct synthetic guard names (#27) and that the SuspendException-escape
+        /// filter is not emitted on unrelated typed catches (no CS0184). The generated
+        /// variant must compile and return the normal-path value.
+        /// </summary>
+        [Continuable]
+        public int SiblingCatchClauses()
+        {
+            int result = 0;
+            try
+            {
+                result = 7;
+            }
+            catch (System.InvalidOperationException)
+            {
+                result = -1;
+            }
+            catch (System.ArgumentException)
+            {
+                result = -2;
+            }
+            return result;
+        }
+
+        #endregion
+    }
+
+    /// <summary>
+    /// A simple disposable used by UsingStatementMethod to verify using semantics.
+    /// </summary>
+    public sealed class TrackedDisposable : System.IDisposable
+    {
+        public int Value => 42;
+        public bool Disposed { get; private set; }
+        public void Dispose() => Disposed = true;
     }
 }

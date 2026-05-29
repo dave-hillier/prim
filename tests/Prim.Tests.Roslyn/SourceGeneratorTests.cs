@@ -437,6 +437,125 @@ namespace Prim.Tests.Roslyn
 
         #endregion
 
+        #region Batch 5 Feature Tests
+
+        [Fact]
+        public void VarLocalOfNonTrivialType_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // var builder = new StringBuilder(); appends 'x' 4 times -> Length 4
+            var result = instance.VarLocalOfNonTrivialType_Continuable();
+
+            Assert.Equal(4, result);
+        }
+
+        [Fact]
+        public void SiblingScopeLocalsSameName_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Two sibling-scope locals named 'i' (10 and 20) -> 30
+            var result = instance.SiblingScopeLocalsSameName_Continuable();
+
+            Assert.Equal(30, result);
+        }
+
+        [Fact]
+        public void SiblingCatchClauses_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // Two sibling typed catch clauses; normal path returns 7. The generated
+            // variant compiling at all proves sibling catches get distinct guard names
+            // and the SuspendException filter is not mis-emitted on unrelated catches.
+            var result = instance.SiblingCatchClauses_Continuable();
+
+            Assert.Equal(7, result);
+        }
+
+        [Fact]
+        public void ForEachSum_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // foreach over {1,2,3,4} -> 10
+            var result = instance.ForEachSum_Continuable();
+
+            Assert.Equal(10, result);
+        }
+
+        [Fact]
+        public void WhileWithLocal_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // while loop with body-local -> 1+2+3+4+5 = 15
+            var result = instance.WhileWithLocal_Continuable();
+
+            Assert.Equal(15, result);
+        }
+
+        [Fact]
+        public void UsingStatementMethod_GeneratedMethod_Works()
+        {
+            var instance = new SampleContinuableClass();
+
+            // using resource exposes Value 42, disposed in finally
+            var result = instance.UsingStatementMethod_Continuable();
+
+            Assert.Equal(42, result);
+        }
+
+        [Fact]
+        public void ForEachSum_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            // Force a suspend before the foreach loop yield point, then resume.
+            var first = runner.Run(() =>
+            {
+                ScriptContext.Current.RequestYield();
+                return instance.ForEachSum_Continuable();
+            });
+            Assert.True(first.IsSuspended);
+            var suspended = (ContinuationResult<int>.Suspended)first;
+
+            var resumed = runner.Resume<int>(
+                suspended.State,
+                resumeValue: null,
+                entryPoint: () => instance.ForEachSum_Continuable());
+
+            Assert.True(resumed.IsCompleted);
+            Assert.Equal(10, ((ContinuationResult<int>.Completed)resumed).Value);
+        }
+
+        [Fact]
+        public void WhileWithLocal_CanBeSuspendedAndResumed()
+        {
+            var instance = new SampleContinuableClass();
+            var runner = new ContinuationRunner();
+
+            var first = runner.Run(() =>
+            {
+                ScriptContext.Current.RequestYield();
+                return instance.WhileWithLocal_Continuable();
+            });
+            Assert.True(first.IsSuspended);
+            var suspended = (ContinuationResult<int>.Suspended)first;
+
+            var resumed = runner.Resume<int>(
+                suspended.State,
+                resumeValue: null,
+                entryPoint: () => instance.WhileWithLocal_Continuable());
+
+            Assert.True(resumed.IsCompleted);
+            Assert.Equal(15, ((ContinuationResult<int>.Completed)resumed).Value);
+        }
+
+        #endregion
+
         #region FrameCapture Tests
 
         [Fact]

@@ -1,0 +1,162 @@
+using System.Linq;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Prim.Core;
+using Prim.Roslyn;
+using Xunit;
+
+namespace Prim.Tests.Roslyn
+{
+    /// <summary>
+    /// Drives the source generator directly via a CSharpGeneratorDriver to assert that
+    /// unsupported [Continuable] members are DIAGNOSED and SKIPPED rather than producing
+    /// non-compiling output (#26). Also asserts supported members produce no diagnostics.
+    /// </summary>
+    public class GeneratorDiagnosticTests
+    {
+        private static (GeneratorDriverRunResult RunResult, Compilation OutputCompilation) Run(string source)
+        {
+            var syntaxTree = CSharpSyntaxTree.ParseText(source);
+
+            var references = new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Linq.Enumerable).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Collections.Generic.IEnumerable<>).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(System.Threading.Tasks.Task).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(ContinuableAttribute).Assembly.Location),
+                MetadataReference.CreateFromFile(typeof(Prim.Runtime.ScriptContext).Assembly.Location),
+                MetadataReference.CreateFromFile(System.Reflection.Assembly.Load("System.Runtime").Location),
+                MetadataReference.CreateFromFile(System.Reflection.Assembly.Load("netstandard").Location),
+            };
+
+            var compilation = CSharpCompilation.Create(
+                "GeneratorDiagnosticTestAssembly",
+                new[] { syntaxTree },
+                references,
+                new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+            var generator = new ContinuationGenerator();
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
+            driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);
+
+            return (driver.GetRunResult(), outputCompilation);
+        }
+
+        private const string Prologue = @"
+using System;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using Prim.Core;
+namespace TestNs
+{
+    public partial class Sample
+    {
+";
+        private const string Epilogue = @"
+    }
+}";
+
+        [Fact]
+        public void AsyncMethod_IsDiagnosedAndSkipped()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public async Task<int> Doit()
+        {
+            await Task.Yield();
+            return 1;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM002", diag.Id);
+            Assert.Contains("async", diag.GetMessage());
+
+            // No source was generated for the skipped method.
+            Assert.DoesNotContain(
+                result.GeneratedTrees,
+                t => t.ToString().Contains("Doit_Continuable"));
+        }
+
+        [Fact]
+        public void IteratorMethod_IsDiagnosedAndSkipped()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public IEnumerable<int> Doit()
+        {
+            yield return 1;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM002", diag.Id);
+            Assert.Contains("iterator", diag.GetMessage());
+            Assert.DoesNotContain(result.GeneratedTrees, t => t.ToString().Contains("Doit_Continuable"));
+        }
+
+        [Fact]
+        public void GenericMethod_IsDiagnosedAndSkipped()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public T Doit<T>(T value)
+        {
+            return value;
+        }
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM002", diag.Id);
+            Assert.Contains("generic", diag.GetMessage());
+        }
+
+        [Fact]
+        public void ExpressionBodiedMethod_IsDiagnosedAndSkipped()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public int Doit() => 7;
+" + Epilogue;
+
+            var (result, _) = Run(src);
+
+            var diag = Assert.Single(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Equal("PRIM002", diag.Id);
+            Assert.Contains("expression-bodied", diag.GetMessage());
+        }
+
+        [Fact]
+        public void SupportedMethod_ProducesNoDiagnostics_AndGeneratesCode()
+        {
+            var src = Prologue + @"
+        [Continuable]
+        public int Doit()
+        {
+            int sum = 0;
+            for (int i = 0; i < 3; i++) { sum += i; }
+            return sum;
+        }
+" + Epilogue;
+
+            var (result, output) = Run(src);
+
+            Assert.Empty(result.Results.SelectMany(r => r.Diagnostics));
+            Assert.Contains(result.GeneratedTrees, t => t.ToString().Contains("Doit_Continuable"));
+
+            // The generated code must COMPILE: no errors in the output compilation
+            // beyond what the (deliberately minimal) test harness reference set allows.
+            var errors = output.GetDiagnostics()
+                .Where(d => d.Severity == DiagnosticSeverity.Error)
+                .ToList();
+            Assert.Empty(errors);
+        }
+    }
+}
