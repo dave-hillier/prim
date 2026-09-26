@@ -302,7 +302,7 @@ namespace Prim.Tests.Cecil
 
         #region ilverify invocation
 
-        private sealed class IlVerifyResult
+        internal sealed class IlVerifyResult
         {
             public bool ToolAvailable { get; init; }
             public List<string> Errors { get; init; } = new();
@@ -314,7 +314,7 @@ namespace Prim.Tests.Cecil
         /// supplying the shared runtime reference assemblies plus the Prim assemblies the
         /// transformed code references. Returns the parsed verification errors.
         /// </summary>
-        private static IlVerifyResult RunIlVerify(string assemblyPath)
+        internal static IlVerifyResult RunIlVerify(string assemblyPath)
         {
             var runtimeDir = RuntimeEnvironment.GetRuntimeDirectory();
             // Directory containing the test's own copies of Prim.Runtime.dll / Prim.Core.dll.

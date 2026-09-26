@@ -324,6 +324,10 @@ namespace Prim.Analysis
             if (a == null) return b;
             if (b == null) return a;
             if (a.FullName == b.FullName) return a;
+            // A managed pointer must stay recognisable as one; widening it to object would
+            // hide that it cannot be spilled.
+            if (a.IsByReference) return a;
+            if (b.IsByReference) return b;
             // Differing types widen to a safe common supertype.
             return _method.Module.TypeSystem.Object;
         }
@@ -531,6 +535,29 @@ namespace Prim.Analysis
                 case Code.Ldfld:
                     if (instruction.Operand is FieldReference field)
                         return field.FieldType;
+                    break;
+
+                // Address-of loads push a managed pointer. Modelling it as a byref (rather
+                // than widening to object) lets the transformer see that such a slot cannot
+                // be spilled into an object[] frame record.
+                case Code.Ldloca:
+                case Code.Ldloca_S:
+                    if (instruction.Operand is VariableDefinition addrLocal)
+                        return new ByReferenceType(addrLocal.VariableType);
+                    break;
+                case Code.Ldarga:
+                case Code.Ldarga_S:
+                    if (instruction.Operand is ParameterDefinition addrParam)
+                        return new ByReferenceType(addrParam.ParameterType);
+                    break;
+                case Code.Ldflda:
+                case Code.Ldsflda:
+                    if (instruction.Operand is FieldReference addrField)
+                        return new ByReferenceType(addrField.FieldType);
+                    break;
+                case Code.Ldelema:
+                    if (instruction.Operand is TypeReference elementType)
+                        return new ByReferenceType(elementType);
                     break;
 
                 case Code.Dup:

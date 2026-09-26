@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\Prim.Runtime\Prim.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Prim.Analysis\Prim.Analysis.csproj" />
     <ProjectReference Include="..\..\src\Prim.Cecil\Prim.Cecil.csproj" />
+    <ProjectReference Include="..\..\src\Prim.Serialization\Prim.Serialization.csproj" />
   </ItemGroup>
 
 </Project>

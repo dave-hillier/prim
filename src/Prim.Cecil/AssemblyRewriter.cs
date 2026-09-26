@@ -42,9 +42,40 @@ namespace Prim.Cecil
         {
             if (assembly == null) throw new ArgumentNullException(nameof(assembly));
 
+            // Collect every candidate method up front so each transformer knows which call
+            // targets are themselves transformed: those call sites become resume points.
+            var candidates = new List<MethodDefinition>();
             foreach (var module in assembly.Modules)
             {
-                TransformModule(module);
+                foreach (var type in module.Types)
+                {
+                    CollectCandidates(type, candidates);
+                }
+            }
+
+            var candidateSet = new HashSet<MethodDefinition>(candidates);
+            bool IsContinuableCall(MethodReference called)
+            {
+                MethodDefinition resolved;
+                try
+                {
+                    resolved = called.Resolve();
+                }
+                catch (AssemblyResolutionException)
+                {
+                    return false;
+                }
+                return resolved != null && candidateSet.Contains(resolved);
+            }
+
+            foreach (var method in candidates)
+            {
+                var transformer = new MethodTransformer(method, _options, IsContinuableCall);
+                transformer.Transform();
+                if (!transformer.WasTransformed && transformer.SkipReason != null)
+                {
+                    SkippedMethods.Add((method.FullName, transformer.SkipReason));
+                }
             }
 
             return assembly;
@@ -78,15 +109,7 @@ namespace Prim.Cecil
             }
         }
 
-        private void TransformModule(ModuleDefinition module)
-        {
-            foreach (var type in module.Types)
-            {
-                TransformType(type);
-            }
-        }
-
-        private void TransformType(TypeDefinition type)
+        private void CollectCandidates(TypeDefinition type, List<MethodDefinition> candidates)
         {
             // Check if type has [Continuable] attribute
             if (!ShouldTransformType(type)) return;
@@ -95,19 +118,14 @@ namespace Prim.Cecil
             {
                 if (ShouldTransformMethod(method))
                 {
-                    var transformer = new MethodTransformer(method, _options);
-                    transformer.Transform();
-                    if (!transformer.WasTransformed && transformer.SkipReason != null)
-                    {
-                        SkippedMethods.Add((method.FullName, transformer.SkipReason));
-                    }
+                    candidates.Add(method);
                 }
             }
 
             // Process nested types
             foreach (var nestedType in type.NestedTypes)
             {
-                TransformType(nestedType);
+                CollectCandidates(nestedType, candidates);
             }
         }
 
