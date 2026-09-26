@@ -247,9 +247,9 @@ The combination guarantees bounded execution between yield points.
 
 ### 5.2 Instruction Counting
 
-The obvious approach for preemption is safepoint polling: check a flag set by an external timer or scheduler thread. However, this requires crossing the managed-unmanaged boundary—the timer callback runs in native code and must communicate with managed code. In Second Life's deployment, this boundary crossing proved expensive enough that an alternative was needed.
+The obvious approach for preemption is safepoint polling: check a flag set by an external timer or scheduler thread. However, in Second Life's deployment the timer lived outside the scripts, in native code, and consulting it on every loop iteration meant crossing the managed-unmanaged boundary. That crossing was too expensive to pay at every yield point.
 
-Instruction counting moves the preemption decision entirely into managed code:
+Second Life therefore used both a timer and an instruction counter. The timer set policy: it decided when a script's time slice was over. The counter handled mechanism: it was a cheap check in managed code at each yield point, so the boundary was only crossed when the counter ran out:
 
 ```csharp
 context.InstructionBudget -= COST;
@@ -261,7 +261,9 @@ if (context.InstructionBudget <= 0)
 
 COST is the estimated cost of instructions since the last check. The budget is set by the scheduler before each execution slice; when exhausted, the script yields.
 
-This approach has several advantages. No timer thread or native callback is needed—preemption is entirely cooperative and stays in managed code. The cost is predictable: a decrement and comparison at each yield point. And it provides natural fairness accounting: scripts that do more work consume more budget.
+The counter keeps the per-yield-point check entirely in managed code, while the timer remains the authority on scheduling. The cost is predictable: a decrement and comparison at each yield point. The counter also provides natural fairness accounting: scripts that do more work consume more budget.
+
+A host that doesn't face the boundary-crossing cost can use either mechanism alone. Pure polling (§5.3) is simpler, and pure counting gives more precise accounting.
 
 The tradeoff is that instruction counts are approximate. Different instructions have different real costs, and JIT optimization makes static estimates even less accurate. But for the goal of preventing runaway scripts, approximate fairness is sufficient.
 
