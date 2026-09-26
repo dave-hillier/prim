@@ -99,12 +99,10 @@ HostFrameRecord:
   - MethodToken: identifies which method
   - YieldPointId: where within the method (for dispatch on restore)
   - Slots: array of captured values (locals + eval stack items)
-  - Caller: link to the next record in the chain
+  - Caller: link to the next frame inward (the callee); null for the innermost frame
 ```
 
-The complete continuation state is the head of this chain. Serialization walks the chain and encodes each record; deserialization rebuilds it.
-
-Because each frame *prepends* its record as the exception passes outward (§3.2), the head of the finished chain is the outermost frame, and each record links to the frame it called. Despite its name, `Caller` therefore points inward, toward the innermost frame. This is exactly the order restoration needs (§6.1), so no reversal is required.
+The complete continuation state is the head of this chain, which is the outermost frame. Despite its name, `Caller` points inward: each catch block prepends its record to the chain its callees have already built (§3.2). This is exactly the order restoration needs (§6.1), so no reversal is required. Serialization walks the chain and encodes each record; deserialization rebuilds it.
 
 ### 3.2 Capture Catch Block
 
@@ -575,7 +573,7 @@ The original Second Life system used bytecode rewriting (with RAIL, a precursor 
 
 ### 10.4 Status of Prim
 
-Prim is an open-source reimplementation of these techniques for .NET, and its two transformers are experimental. The bytecode rewriter implements §4 as described: CFG-based stack simulation, spilling, the verifiable prologue/dispatch split, and optional instruction counting. Its output is checked with `ilverify` and executed in tests. It does not yet place yield points inside protected regions, and it does not yet support suspension across a chain of rewritten methods: every frame's catch block records the yield point ID carried by the exception, which is only correct for the innermost frame (§3.2, §4.5). The source generator uses replay (§6.3), handles nested continuable calls, and filters `SuspendException` out of user catch clauses. JSON serialization preserves reference identity; MessagePack preserves slot types but not shared references.
+Prim is an open-source reimplementation of these techniques for .NET, and its two transformers are experimental. The bytecode rewriter implements §4 as described: CFG-based stack simulation, spilling, the verifiable prologue/dispatch split, and optional instruction counting. Its output is checked with `ilverify` and executed in tests. Calls to other `[Continuable]` methods get a resume label (without a yield check), and each frame records its own yield point in a local, so a continuation can span a chain of rewritten methods (§3.2, §4.5). It does not yet place yield points inside protected regions. The source generator uses replay (§6.3), handles nested continuable calls, and filters `SuspendException` out of user catch clauses. JSON serialization preserves reference identity; MessagePack preserves slot types but not shared references.
 
 ---
 

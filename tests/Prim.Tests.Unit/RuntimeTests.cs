@@ -257,15 +257,17 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void FrameCapture_CaptureFrame_WithNestedCallers()
+        public void FrameCapture_CaptureFrame_PrependsToCapturedCallees()
         {
-            var grandparent = new HostFrameRecord(100, 0, new object[] { 1 }, null);
-            var parent = new HostFrameRecord(200, 1, new object[] { 2 }, grandparent);
-            var child = FrameCapture.CaptureFrame(300, 2, new object[] { 3 }, parent);
+            // Capture runs innermost-first as SuspendException unwinds, so each new
+            // record is an OUTER frame whose Caller link points inward.
+            var innermost = new HostFrameRecord(100, 0, new object[] { 1 }, null);
+            var middle = new HostFrameRecord(200, 1, new object[] { 2 }, innermost);
+            var outermost = FrameCapture.CaptureFrame(300, 2, new object[] { 3 }, middle);
 
-            Assert.Equal(3, child.GetStackDepth());
-            Assert.Same(parent, child.Caller);
-            Assert.Same(grandparent, child.Caller.Caller);
+            Assert.Equal(3, outermost.GetStackDepth());
+            Assert.Same(middle, outermost.Caller);
+            Assert.Same(innermost, outermost.Caller.Caller);
         }
 
         [Fact]
@@ -648,12 +650,13 @@ namespace Prim.Tests.Unit
                 return 42;
             });
 
-            // Build a 3-level stack: root -> middle -> inner
-            var root = new HostFrameRecord(rootToken, 0, new object[0], null);
-            var middle = new HostFrameRecord(middleToken, 0, new object[0], root);
-            var inner = new HostFrameRecord(innerToken, 0, new object[0], middle);
+            // Build a 3-level stack as capture produces it: the head is the
+            // outermost (root) frame and each Caller link points inward.
+            var inner = new HostFrameRecord(innerToken, 0, new object[0], null);
+            var middle = new HostFrameRecord(middleToken, 0, new object[0], inner);
+            var root = new HostFrameRecord(rootToken, 0, new object[0], middle);
 
-            var state = new ContinuationState(inner);
+            var state = new ContinuationState(root);
             var continuation = new Continuation<int>(state);
 
             // Resume should find root frame and call its entry point

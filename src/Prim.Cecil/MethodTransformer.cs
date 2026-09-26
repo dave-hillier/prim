@@ -36,17 +36,24 @@ namespace Prim.Cecil
     ///       ... original body ...
     ///       // at each yield point:
     ///       //   spill live eval stack -> temp locals
+    ///       //   __yieldPoint = id;
     ///       //   EnsureCurrent(); HandleYieldPoint(id)   // may throw SuspendException
     ///       // resume_i:                                  // Nop; resume lands here (after
     ///       //                                            //   the check, before the op)
     ///       //   reload spilled eval-stack temps and push them back
     ///       //   <suspending op>                          // re-executed once on resume
     ///       //                                            //   (e.g. the back-edge branch)
+    ///       // at each call to another transformed method (resume point, no check):
+    ///       //   spill live eval stack (incl. the call's arguments) -> temp locals
+    ///       // resume_i:
+    ///       //   __yieldPoint = id;
+    ///       //   reload spilled temps; call Callee(...)  // re-executed on resume; the
+    ///       //                                            //   callee restores itself
     ///       ... original 'ret' rewritten to: (stloc __ret;) leave realRet ...
     ///   }
     ///   catch (Prim.Core.SuspendException __ex) {
     ///       // pack locals + spilled temps into object[] slots
-    ///       // __record = FrameCapture.CaptureFrame(methodToken, __ex.YieldPointId, slots, __ex.FrameChain);
+    ///       // __record = FrameCapture.CaptureFrame(methodToken, __yieldPoint, slots, __ex.FrameChain);
     ///       // __ex.FrameChain = __record;
     ///       rethrow;
     ///   }
@@ -60,6 +67,13 @@ namespace Prim.Cecil
     /// pre-check sits outside the try and only branches to the START of the try region
     /// (entering it normally), which is also legal.
     /// </para>
+    ///
+    /// <para>
+    /// The catch records <c>__yieldPoint</c>, not <c>__ex.YieldPointId</c>: the exception
+    /// carries the ID of the yield point that threw, which belongs to the innermost frame
+    /// only. Every outer frame is suspended at a call to a transformed method, and must
+    /// resume at that call site (whitepaper §3.2, §4.5).
+    /// </para>
     /// </summary>
     internal sealed class MethodTransformer
     {
@@ -67,6 +81,10 @@ namespace Prim.Cecil
         private readonly RewriterOptions _options;
         private readonly YieldPointIdentifier _yieldPointIdentifier;
         private readonly ModuleDefinition _module;
+
+        // Frame-local "current yield point": written before every yield check and at every
+        // continuable call site, read by the catch block when recording this frame.
+        private VariableDefinition _yieldPointLocal;
 
         // Number of locals present in the method before any synthetic locals are
         // injected. Captured before we add synthetic/spill locals so slot indexing
@@ -115,7 +133,6 @@ namespace Prim.Cecil
         private MethodReference _yieldPointIdGetter;
         private MethodReference _slotsGetter;
         private MethodReference _callerGetter;
-        private MethodReference _suspendYieldPointIdGetter;
         private MethodReference _suspendFrameChainGetter;
         private MethodReference _suspendFrameChainSetter;
 
@@ -124,10 +141,21 @@ namespace Prim.Cecil
         public bool WasTransformed { get; private set; }
 
         public MethodTransformer(MethodDefinition method, RewriterOptions options)
+            : this(method, options, null)
+        {
+        }
+
+        /// <param name="isContinuableCall">
+        /// Identifies calls to other transformed methods; each becomes a resume point.
+        /// </param>
+        public MethodTransformer(
+            MethodDefinition method, RewriterOptions options, Func<MethodReference, bool> isContinuableCall)
         {
             _method = method ?? throw new ArgumentNullException(nameof(method));
             _options = options ?? throw new ArgumentNullException(nameof(options));
-            _yieldPointIdentifier = new YieldPointIdentifier(method, options.ToYieldPointOptions());
+            var yieldPointOptions = options.ToYieldPointOptions();
+            yieldPointOptions.IsContinuableCall = isContinuableCall;
+            _yieldPointIdentifier = new YieldPointIdentifier(method, yieldPointOptions);
             _module = method.Module;
         }
 
@@ -142,7 +170,7 @@ namespace Prim.Cecil
             // #38: byref / pinned / pointer locals and ref/out parameters cannot be
             // round-tripped through object[] / GetSlot<T>. Rather than emit invalid IL,
             // skip the method and surface a diagnostic.
-            if (!CanCaptureState(out var reason))
+            if (!CanCaptureState(yieldPoints, out var reason))
             {
                 SkipReason = reason;
                 return;
@@ -177,6 +205,7 @@ namespace Prim.Cecil
             var stateLocal = AddLocal(_module.TypeSystem.Int32);
             var exLocal = AddLocal(_suspendExceptionType);
             var recordLocal = AddLocal(_hostFrameRecordType);
+            _yieldPointLocal = AddLocal(_module.TypeSystem.Int32);
             VariableDefinition retLocal = null;
             bool hasReturnValue = _method.ReturnType.FullName != "System.Void";
             if (hasReturnValue)
@@ -249,9 +278,26 @@ namespace Prim.Cecil
 
         // -- #38: capture eligibility -------------------------------------------------
 
-        private bool CanCaptureState(out string reason)
+        private bool CanCaptureState(List<ILYieldPoint> yieldPoints, out string reason)
         {
             reason = null;
+
+            // A managed pointer live on the evaluation stack at a yield point (e.g. the
+            // 'ldloca' receiver of a struct method call) would have to be spilled into the
+            // object[] frame record, which is impossible.
+            foreach (var yp in yieldPoints)
+            {
+                var types = yp.StackState?.Types;
+                if (types == null) continue;
+                foreach (var t in types)
+                {
+                    if (t != null && (t.IsByReference || t.IsPointer || t.IsPinned || t.IsFunctionPointer))
+                    {
+                        reason = $"a managed or unmanaged pointer is live on the evaluation stack at {yp}; state capture unsupported";
+                        return false;
+                    }
+                }
+            }
 
             // ref/out parameters are byref and cannot be boxed/round-tripped.
             foreach (var p in _method.Parameters)
@@ -317,14 +363,21 @@ namespace Prim.Cecil
             {
                 var state = yp.StackState;
                 int depth = state?.Depth ?? 0;
+                var argumentTypes = yp.Kind == ILYieldPointKind.ContinuableCall
+                    ? CallArgumentTypes((MethodReference)yp.Instruction.Operand)
+                    : new List<TypeReference>();
                 var temps = new List<VariableDefinition>(depth);
                 for (int i = 0; i < depth; i++)
                 {
                     // Types[] is bottom-to-top; pick the slot's type (widened to object
-                    // where the simulator could not refine it).
-                    var slotType = (state.Types != null && i < state.Types.Length && state.Types[i] != null)
-                        ? state.Types[i]
-                        : _module.TypeSystem.Object;
+                    // where the simulator could not refine it). The top slots of a call
+                    // site are the call's arguments; their declared types are exact.
+                    int argumentIndex = i - (depth - argumentTypes.Count);
+                    var slotType = argumentIndex >= 0 && argumentTypes[argumentIndex] != null
+                        ? argumentTypes[argumentIndex]
+                        : (state.Types != null && i < state.Types.Length && state.Types[i] != null)
+                            ? state.Types[i]
+                            : _module.TypeSystem.Object;
                     temps.Add(AddLocal(slotType));
                 }
                 _spillTemps[yp.Id] = temps;
@@ -332,6 +385,29 @@ namespace Prim.Cecil
                 nextBase += depth;
             }
             _totalSpillSlots = nextBase - _stackSlotBase;
+        }
+
+        /// <summary>
+        /// Declared types of the operands a call pops (receiver first, then parameters),
+        /// or null for an operand whose declared type is generic and so cannot be named
+        /// here without inflating the signature.
+        /// </summary>
+        private List<TypeReference> CallArgumentTypes(MethodReference called)
+        {
+            var types = new List<TypeReference>();
+            if (called.HasThis)
+            {
+                types.Add(called.DeclaringType.IsValueType || called.DeclaringType.ContainsGenericParameter
+                    ? null
+                    : _module.ImportReference(called.DeclaringType));
+            }
+            foreach (var p in called.Parameters)
+            {
+                types.Add(p.ParameterType.ContainsGenericParameter
+                    ? null
+                    : _module.ImportReference(p.ParameterType));
+            }
+            return types;
         }
 
         private void ImportReferences()
@@ -369,8 +445,6 @@ namespace Prim.Cecil
                 if (suspendExDef != null)
                 {
                     _suspendExceptionType = _module.ImportReference(suspendExDef);
-                    _suspendYieldPointIdGetter = TryImport(suspendExDef.Properties
-                        .FirstOrDefault(p => p.Name == "YieldPointId")?.GetMethod);
                     _suspendFrameChainGetter = TryImport(suspendExDef.Properties
                         .FirstOrDefault(p => p.Name == "FrameChain")?.GetMethod);
                     _suspendFrameChainSetter = TryImport(suspendExDef.Properties
@@ -436,6 +510,15 @@ namespace Prim.Cecil
         /// operands on BOTH the normal and the resume path (on resume the temps have been
         /// repopulated from the frame slots by the pre-check). Returns a map from
         /// yield-point Id to its resume label.
+        ///
+        /// A call to another transformed method gets no yield check, only a resume label:
+        /// <code>
+        ///   [spill: stloc temps...]                  // includes the call's arguments
+        ///   resume_i:
+        ///   ldc id; stloc __yieldPoint               // after the label, so it also runs on resume
+        ///   [reload: ldloc temps...]
+        ///   call Callee                              // re-executed on resume
+        /// </code>
         /// </summary>
         private Dictionary<int, Instruction> InjectYieldPointChecks(ILProcessor il, List<ILYieldPoint> yieldPoints)
         {
@@ -459,27 +542,41 @@ namespace Prim.Cecil
                 var seq = new List<Instruction>();
 
                 // Spill: drain the live eval stack top-first into temps. After this the
-                // operand stack is empty so the yield check throws from an empty stack.
+                // operand stack is empty so the yield check throws from an empty stack,
+                // and the dispatch switch can branch to the resume label.
                 for (int i = temps.Count - 1; i >= 0; i--)
                 {
                     seq.Add(il.Create(OpCodes.Stloc, temps[i]));
                 }
 
-                // Yield check.
-                seq.Add(il.Create(OpCodes.Call, _ensureCurrentMethod));
-                seq.Add(il.Create(OpCodes.Ldc_I4, yp.Id));
-                if (_options.EnableInstructionCounting && _handleYieldPointWithBudgetMethod != null)
+                if (yp.Kind == ILYieldPointKind.ContinuableCall)
                 {
-                    seq.Add(il.Create(OpCodes.Ldc_I4, cost));
-                    seq.Add(il.Create(OpCodes.Callvirt, _handleYieldPointWithBudgetMethod));
+                    seq.Add(resumeLabel);
+                    seq.Add(il.Create(OpCodes.Ldc_I4, yp.Id));
+                    seq.Add(il.Create(OpCodes.Stloc, _yieldPointLocal));
                 }
                 else
                 {
-                    seq.Add(il.Create(OpCodes.Callvirt, _handleYieldPointMethod));
+                    seq.Add(il.Create(OpCodes.Ldc_I4, yp.Id));
+                    seq.Add(il.Create(OpCodes.Stloc, _yieldPointLocal));
+
+                    // Yield check.
+                    seq.Add(il.Create(OpCodes.Call, _ensureCurrentMethod));
+                    seq.Add(il.Create(OpCodes.Ldc_I4, yp.Id));
+                    if (_options.EnableInstructionCounting && _handleYieldPointWithBudgetMethod != null)
+                    {
+                        seq.Add(il.Create(OpCodes.Ldc_I4, cost));
+                        seq.Add(il.Create(OpCodes.Callvirt, _handleYieldPointWithBudgetMethod));
+                    }
+                    else
+                    {
+                        seq.Add(il.Create(OpCodes.Callvirt, _handleYieldPointMethod));
+                    }
+
+                    seq.Add(resumeLabel);
                 }
 
-                // Resume label, then reload operands for the suspending op.
-                seq.Add(resumeLabel);
+                // Reload operands for the suspending op.
                 for (int i = 0; i < temps.Count; i++)
                 {
                     seq.Add(il.Create(OpCodes.Ldloc, temps[i]));
@@ -505,7 +602,10 @@ namespace Prim.Cecil
             var instructions = _method.Body.Instructions;
             if (yieldPoints.Count == 0 || instructions.Count == 0) return costs;
 
+            // Continuable call sites have no yield check, so they do not delimit budget
+            // intervals.
             var sortedYieldPoints = yieldPoints
+                .Where(yp => yp.Kind != ILYieldPointKind.ContinuableCall)
                 .OrderBy(yp => instructions.IndexOf(yp.Instruction))
                 .ToList();
 
@@ -680,7 +780,9 @@ namespace Prim.Cecil
             }
 
             // slots array is now on the stack. Build the CaptureFrame call:
-            // CaptureFrame(methodToken, __ex.YieldPointId, slots, __ex.FrameChain)
+            // CaptureFrame(methodToken, __yieldPoint, slots, __ex.FrameChain)
+            // __yieldPoint is this frame's own yield point: the check that threw if this is
+            // the innermost frame, otherwise the call site of the suspended callee.
             // Stack currently: [slots]. We need [methodToken, yieldPointId, slots, caller].
             // Stash slots into recordLocal-typed temp? Easier: reorder using locals is
             // messy; instead push the other args around it. We have slots on top; store
@@ -690,8 +792,7 @@ namespace Prim.Cecil
 
             instrs.Add(il.Create(OpCodes.Ldc_I4, methodToken));
 
-            instrs.Add(il.Create(OpCodes.Ldloc, exLocal));
-            instrs.Add(il.Create(OpCodes.Callvirt, _suspendYieldPointIdGetter));
+            instrs.Add(il.Create(OpCodes.Ldloc, _yieldPointLocal));
 
             instrs.Add(il.Create(OpCodes.Ldloc, slotsLocal));
 

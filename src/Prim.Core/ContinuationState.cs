@@ -14,7 +14,8 @@ namespace Prim.Core
 
         /// <summary>
         /// The head of the linked list of captured frames.
-        /// This is the innermost (most recently called) frame.
+        /// This is the outermost frame (the entry point); follow
+        /// <see cref="HostFrameRecord.Caller"/> inward to reach the frame that suspended.
         /// </summary>
         public HostFrameRecord StackHead { get; set; }
 
