@@ -52,6 +52,14 @@ namespace Prim.Analysis
         ExternalCall,
 
         /// <summary>
+        /// A call to another transformed method. This is a resume point only: no yield
+        /// check is injected, but if the callee suspends, the caller's frame records this
+        /// call site so that on resume it re-executes the call and the callee restores
+        /// itself.
+        /// </summary>
+        ContinuableCall,
+
+        /// <summary>
         /// Method return point.
         /// </summary>
         Return
@@ -79,6 +87,13 @@ namespace Prim.Analysis
         /// Calls to methods in these assemblies won't be yield points.
         /// </summary>
         public HashSet<string> InternalAssemblies { get; set; } = new HashSet<string>();
+
+        /// <summary>
+        /// Identifies calls to other transformed methods. Each such call becomes a
+        /// <see cref="ILYieldPointKind.ContinuableCall"/> resume point. Null means no call
+        /// is treated as continuable.
+        /// </summary>
+        public Func<MethodReference, bool> IsContinuableCall { get; set; }
 
         /// <summary>
         /// Default options (backward branches only).
@@ -149,30 +164,38 @@ namespace Prim.Analysis
                 }
             }
 
-            // Add yield points at external calls (Second Life-style behavior)
-            if (_options.IncludeExternalCalls)
+            // Add resume points at calls to other transformed methods, and (optionally)
+            // yield points at external calls (Second Life-style behavior).
+            if (_options.IsContinuableCall != null || _options.IncludeExternalCalls)
             {
                 foreach (var instruction in _method.Body.Instructions)
                 {
-                    if (instruction.OpCode.Code == Code.Call ||
-                        instruction.OpCode.Code == Code.Callvirt)
-                    {
-                        if (instruction.Operand is MethodReference called &&
-                            IsExternalCall(called))
-                        {
-                            // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
-                            if (IsInExceptionHandlerRegion(instruction.Offset))
-                                continue;
+                    if (instruction.OpCode.Code != Code.Call &&
+                        instruction.OpCode.Code != Code.Callvirt)
+                        continue;
 
-                            yieldPoints.Add(new ILYieldPoint
-                            {
-                                Id = nextId++,
-                                Instruction = instruction,
-                                Kind = ILYieldPointKind.ExternalCall,
-                                StackState = _stackSim.GetStateAt(instruction.Offset)
-                            });
-                        }
-                    }
+                    if (!(instruction.Operand is MethodReference called))
+                        continue;
+
+                    ILYieldPointKind kind;
+                    if (_options.IsContinuableCall != null && _options.IsContinuableCall(called))
+                        kind = ILYieldPointKind.ContinuableCall;
+                    else if (_options.IncludeExternalCalls && IsExternalCall(called))
+                        kind = ILYieldPointKind.ExternalCall;
+                    else
+                        continue;
+
+                    // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
+                    if (IsInExceptionHandlerRegion(instruction.Offset))
+                        continue;
+
+                    yieldPoints.Add(new ILYieldPoint
+                    {
+                        Id = nextId++,
+                        Instruction = instruction,
+                        Kind = kind,
+                        StackState = _stackSim.GetStateAt(instruction.Offset)
+                    });
                 }
             }
 
