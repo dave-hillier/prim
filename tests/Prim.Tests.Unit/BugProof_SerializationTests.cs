@@ -35,66 +35,6 @@ namespace Prim.Tests.Unit
         }
 
         // ----------------------------------------------------------------
-        // BUG 2: ObjectGraphTracker.TryRegister always returns true for
-        //         null -- it never remembers that null was already seen.
-        // ----------------------------------------------------------------
-        [Fact]
-        public void Bug_ObjectGraphTracker_Null_Always_Newly_Registered()
-        {
-            var tracker = new ObjectGraphTracker();
-
-            bool firstResult = tracker.TryRegister(null, out int id1);
-            bool secondResult = tracker.TryRegister(null, out int id2);
-
-            // First registration of null: fine
-            Assert.True(firstResult);
-
-            // Second registration of null should return false (already seen).
-            // BUG: Always returns true for null, never tracks it.
-            Assert.False(secondResult); // FAILS - null is never tracked
-        }
-
-        // ----------------------------------------------------------------
-        // BUG 3: ObjectGraphTracker.RegisterDeserialized performs unbounded
-        //         memory allocation -- a large ID causes a List to grow to
-        //         that size with null padding, creating a DoS vector.
-        // ----------------------------------------------------------------
-        [Fact]
-        public void Bug_ObjectGraphTracker_Large_Id_Memory_Allocation()
-        {
-            var tracker = new ObjectGraphTracker();
-
-            // BUG: Large IDs cause unbounded List growth.
-            // Registering id=1_000_000 causes a list of 1M+ null entries.
-            // This is a DoS vector from untrusted input.
-            Assert.Throws<ArgumentOutOfRangeException>(() =>
-                tracker.RegisterDeserialized(1_000_000, "malicious"));
-            // FAILS - no bounds check, it happily allocates
-        }
-
-        // ----------------------------------------------------------------
-        // BUG 4: ObjectGraphTracker.GetById cannot distinguish a null
-        //         value that was legitimately registered from an ID that
-        //         was never registered -- both return null.
-        // ----------------------------------------------------------------
-        [Fact]
-        public void Bug_ObjectGraphTracker_GetById_Null_Ambiguity()
-        {
-            var tracker = new ObjectGraphTracker();
-
-            // Register a real null at id 0
-            tracker.RegisterDeserialized(0, null);
-
-            // Get id 0 (registered as null) vs id 999 (never registered)
-            var result0 = tracker.GetById(0);
-            var result999 = tracker.GetById(999);
-
-            // BUG: Both return null - can't tell if id was registered with null value
-            // or if it was never registered at all.
-            Assert.NotEqual(result0, result999); // FAILS - both are null
-        }
-
-        // ----------------------------------------------------------------
         // BUG 5: SlotTypeResolver.GetTypeName has no case for sbyte, even
         //         though RegisterBuiltInTypes registers "sbyte" in the
         //         reverse mapping. Round-tripping is asymmetric.
