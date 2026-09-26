@@ -113,5 +113,49 @@ namespace Prim.Tests.Roslyn
             Assert.True(resumed.IsCompleted, "Resumed generated method should run to completion.");
             Assert.Equal(55, ((ContinuationResult<int>.Completed)resumed).Value);
         }
+
+        /// <summary>
+        /// Direct resume (no entry point passed) of a two-frame continuation:
+        /// OuterCallsInner_Continuable calls InnerSum_Continuable, which suspends.
+        /// Capture prepends each frame as SuspendException unwinds, so StackHead is
+        /// the OUTERMOST frame and HostFrameRecord.Caller points inward. Only the
+        /// outer method is registered, as that is the method the host must invoke
+        /// to replay the stack.
+        /// </summary>
+        [Fact]
+        public void NestedCall_DirectResume_UsesOutermostFrameAsEntryPoint()
+        {
+            var instance = new SampleContinuableClass();
+            var outerToken = StableHash.GenerateMethodToken(
+                "Prim.Tests.Roslyn.SampleContinuableClass", "OuterCallsInner");
+            var innerToken = StableHash.GenerateMethodToken(
+                "Prim.Tests.Roslyn.SampleContinuableClass", "InnerSum", "int");
+
+            var registry = new EntryPointRegistry();
+            registry.Register(outerToken, () => instance.OuterCallsInner_Continuable());
+            var runner = new ContinuationRunner { EntryPoints = registry };
+
+            // The outer method has no yield point before its call, so a pending
+            // yield request fires inside the inner method's loop and both frames
+            // are captured.
+            var first = runner.Run(() =>
+            {
+                ScriptContext.Current.RequestYield();
+                return instance.OuterCallsInner_Continuable();
+            });
+            Assert.True(first.IsSuspended, "Nested call should suspend inside the inner method.");
+            var suspended = (ContinuationResult<int>.Suspended)first;
+
+            var head = suspended.State.StackHead;
+            Assert.Equal(outerToken, head.MethodToken);
+            Assert.NotNull(head.Caller);
+            Assert.Equal(innerToken, head.Caller.MethodToken);
+            Assert.Null(head.Caller.Caller);
+
+            var resumed = runner.Resume(suspended.ToContinuation());
+
+            Assert.True(resumed.IsCompleted, "Direct resume of the nested continuation should complete.");
+            Assert.Equal(115, ((ContinuationResult<int>.Completed)resumed).Value);
+        }
     }
 }

@@ -598,14 +598,14 @@ namespace Prim.Tests.Roslyn
         }
 
         [Fact]
-        public void FrameCapture_CaptureFrame_WithCaller()
+        public void FrameCapture_CaptureFrame_WithCallee()
         {
-            var caller = new HostFrameRecord(100, 0, new object[0], null);
+            var callee = new HostFrameRecord(100, 0, new object[0], null);
             var slots = new object[] { 1 };
-            var record = FrameCapture.CaptureFrame(200, 1, slots, caller);
+            var record = FrameCapture.CaptureFrame(200, 1, slots, callee);
 
             Assert.NotNull(record);
-            Assert.Same(caller, record.Caller);
+            Assert.Same(callee, record.Caller);
             Assert.Equal(2, record.GetStackDepth());
         }
 
