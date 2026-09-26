@@ -130,8 +130,9 @@ namespace Prim.Runtime
                     "Either set the EntryPoints property or use Resume(state, resumeValue, entryPoint).");
             }
 
-            // Find the root frame (entry point) by following the Caller chain
-            var rootFrame = GetRootFrame(context.FrameChain);
+            // The chain head is the outermost frame (capture prepends each frame as
+            // SuspendException unwinds outward), so it identifies the entry point.
+            var rootFrame = context.FrameChain;
             if (rootFrame == null)
             {
                 throw new InvalidOperationException(
@@ -147,33 +148,6 @@ namespace Prim.Runtime
             }
 
             return RunWithContext(context, entryPoint);
-        }
-
-        /// <summary>
-        /// Gets the root (outermost) frame from a frame chain.
-        /// </summary>
-        private static HostFrameRecord GetRootFrame(HostFrameRecord frame)
-        {
-            if (frame == null) return null;
-
-            // Use Floyd's cycle detection to guard against circular Caller chains
-            var slow = frame;
-            var fast = frame;
-
-            while (frame.Caller != null)
-            {
-                frame = frame.Caller;
-
-                slow = slow.Caller;
-                fast = fast.Caller?.Caller;
-
-                if (fast != null && fast == slow)
-                {
-                    throw new InvalidOperationException(
-                        "Circular frame chain detected in continuation state.");
-                }
-            }
-            return frame;
         }
     }
 

@@ -16,7 +16,9 @@ namespace Prim.Runtime
         /// <param name="methodToken">The method's unique token.</param>
         /// <param name="yieldPointId">The yield point where suspension occurred.</param>
         /// <param name="slots">The captured slot values.</param>
-        /// <param name="caller">The caller's frame record (from the exception).</param>
+        /// <param name="caller">The chain captured so far (from the exception), i.e. the
+        /// frames this method was calling; stored as <see cref="HostFrameRecord.Caller"/>,
+        /// which points inward.</param>
         /// <returns>A new HostFrameRecord for this frame.</returns>
         public static HostFrameRecord CaptureFrame(
             int methodToken,

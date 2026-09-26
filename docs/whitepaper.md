@@ -93,10 +93,10 @@ HostFrameRecord:
   - MethodToken: identifies which method
   - YieldPointId: where within the method (for dispatch on restore)
   - Slots: array of captured values (locals + eval stack items)
-  - Caller: link to the next frame outward
+  - Caller: link to the next frame inward (the callee); null for the innermost frame
 ```
 
-The complete continuation state is the head of this chain. Serialization walks the chain and encodes each record; deserialization rebuilds it.
+The complete continuation state is the head of this chain, which is the outermost frame. Despite its name, `Caller` points inward: each catch block prepends its record to the chain its callees have already built. Serialization walks the chain and encodes each record; deserialization rebuilds it.
 
 ### 3.2 Capture Catch Block
 

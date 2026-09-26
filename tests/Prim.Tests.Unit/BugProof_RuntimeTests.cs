@@ -177,8 +177,9 @@ namespace Prim.Tests.Unit
         }
 
         /// <summary>
-        /// ContinuationRunner.GetRootFrame (private) is reached through Resume.
-        /// With a circular Caller chain, Resume hangs forever.
+        /// Direct Resume used to walk the Caller chain (GetRootFrame) to find the
+        /// entry frame. It now uses the chain head, but a circular chain must still
+        /// not hang Resume.
         /// </summary>
         [Fact]
         public void Bug_GetRootFrame_Infinite_Loop_On_Circular_Frame_Chain()
@@ -193,7 +194,6 @@ namespace Prim.Tests.Unit
             var state = new ContinuationState(frame2);
             var continuation = new Continuation<int>(state);
 
-            // BUG: GetRootFrame follows Caller chain without cycle detection.
             var task = Task.Run(() =>
             {
                 try { runner.Resume(continuation); }
