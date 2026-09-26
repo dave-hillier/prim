@@ -21,6 +21,9 @@ namespace Prim.Serialization
         /// <see cref="Prim.Core.ValidationException"/> instead of being handed back
         /// to the caller. Leave null for trusted/round-trip scenarios.
         ///
+        /// Types on this validator's whitelist are also accepted as a slot
+        /// <c>$type</c> by the default <see cref="SlotSerializationBinder"/>.
+        ///
         /// SECURITY: deserializing attacker-supplied continuation state and resuming
         /// it is a full takeover primitive. Set this validator (or validate at
         /// resume via ContinuationRunner.Validator) whenever the bytes are untrusted.
@@ -33,10 +36,12 @@ namespace Prim.Serialization
         }
 
         public JsonContinuationSerializer(SlotTypeResolver resolver)
+            : this(resolver, ContinuationTypeRegistry.Default)
         {
-            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            _codec = new SlotCodec(resolver);
-            _settings = new JsonSerializerSettings
+        }
+
+        public JsonContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
+            : this(new JsonSerializerSettings
             {
                 TypeNameHandling = TypeNameHandling.None,
                 PreserveReferencesHandling = PreserveReferencesHandling.Objects,
@@ -46,7 +51,8 @@ namespace Prim.Serialization
                 // Bound parser recursion so a deep Caller chain throws a catchable
                 // JsonReaderException instead of overflowing the stack (issue #42).
                 MaxDepth = FrameDepthGuard.MaxParserDepth
-            };
+            }, resolver, typeRegistry)
+        {
         }
 
         public JsonContinuationSerializer(JsonSerializerSettings settings)
@@ -55,9 +61,15 @@ namespace Prim.Serialization
         }
 
         public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver)
+            : this(settings, resolver, ContinuationTypeRegistry.Default)
+        {
+        }
+
+        public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            if (typeRegistry == null) throw new ArgumentNullException(nameof(typeRegistry));
             _codec = new SlotCodec(resolver);
 
             // Bound parser recursion for caller-supplied settings that leave
@@ -67,6 +79,15 @@ namespace Prim.Serialization
             if (_settings.MaxDepth == null)
             {
                 _settings.MaxDepth = FrameDepthGuard.MaxParserDepth;
+            }
+
+            // Slot values carry a $type, which Json.NET instantiates during
+            // deserialize, before Validator runs. Without a binder that is a gadget
+            // construction primitive, so restrict $type to allowed types. A caller
+            // that supplies their own binder keeps it and owns that decision.
+            if (_settings.SerializationBinder == null)
+            {
+                _settings.SerializationBinder = new SlotSerializationBinder(resolver, typeRegistry, () => Validator);
             }
         }
 

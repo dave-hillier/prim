@@ -129,6 +129,35 @@ var state = serializer.DeserializeFromString(json);
 var result = ContinuationRunner.Resume<int>(state);
 ```
 
+#### Trust boundary
+
+Serialized continuation state is code-adjacent: resuming attacker-supplied state
+can take over the process. Treat any bytes that crossed a trust boundary as
+untrusted and defend at two points:
+
+- **While deserializing.** Slot values are revived as their recorded CLR type, so
+  the serializer itself limits which types it will construct.
+  `JsonContinuationSerializer` installs a `SlotSerializationBinder` that rejects
+  any `$type` outside the `SlotTypeResolver` built-ins and registered resolvers,
+  the `ContinuationTypeRegistry`, and the serializer's `Validator` whitelist. It
+  throws before the type is instantiated. If you pass `JsonSerializerSettings`
+  with your own `SerializationBinder`, it is kept, and allowing types becomes
+  your job. `MessagePackContinuationSerializer` uses the contractless resolver,
+  which ignores type names in the payload; custom reference types are only
+  rebuilt when the `Validator` allows them. Do not pass it options that use a
+  typeless resolver for untrusted input.
+- **Before resuming.** Set `Validator` on the serializer or on `ContinuationRunner`
+  so method tokens, yield points, slot counts and slot types are checked before
+  any frame is restored.
+
+To round-trip your own slot types, allow them explicitly:
+
+```csharp
+var validator = new ContinuationValidator();
+validator.RegisterAllowedType(typeof(MyState));
+var serializer = new JsonContinuationSerializer { Validator = validator };
+```
+
 ### Automatic Transformation (Experimental)
 
 The longer-term goal is to remove the manual boilerplate above. Instead of writing
