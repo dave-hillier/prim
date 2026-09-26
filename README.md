@@ -27,45 +27,48 @@ For the full technical details, design rationale, and comparison with related sy
 - **Resumes** execution from saved state, even in a different process
 - **Migrates** running computations across processes or machines
 
+## Status
+
+| Component | Status |
+|-----------|--------|
+| `Prim.Core`, `Prim.Runtime` | Working. Run, suspend, resume, budget-based preemption, direct resume via `EntryPointRegistry`. |
+| `Prim.Serialization` | Working. JSON preserves shared references between slots; MessagePack preserves slot types but not shared references. See [Security](#security) before loading untrusted state. |
+| `Prim.Roslyn` source generator | Experimental, works end to end for supported method shapes. Uses a *replay* model (see below). |
+| `Prim.Cecil` IL rewriter | Experimental. Output passes `ilverify` in tests; no MSBuild integration yet, and yield points inside `try`/`catch`/`finally` are not supported. |
+
 ## Project Structure
 
 ```
 Prim/
 ├── src/
-│   ├── Prim.Core/           # Core types (HostFrameRecord, ContinuationState, etc.)
-│   ├── Prim.Runtime/        # Execution context and runner
+│   ├── Prim.Core/           # Core types (HostFrameRecord, ContinuationState, ContinuationValidator, ...)
+│   ├── Prim.Runtime/        # ScriptContext, ContinuationRunner, FrameCapture, EntryPointRegistry
 │   ├── Prim.Serialization/  # JSON and MessagePack serializers
 │   ├── Prim.Roslyn/         # Source generator for [Continuable] methods (experimental)
-│   ├── Prim.Analysis/       # IL analysis (CFG, stack simulation)
+│   ├── Prim.Analysis/       # IL analysis (CFG, stack simulation, yield point identification)
 │   └── Prim.Cecil/          # Bytecode rewriting with Mono.Cecil (experimental)
 ├── tests/
 │   ├── Prim.Tests.Unit/
 │   ├── Prim.Tests.Integration/
 │   ├── Prim.Tests.Roslyn/
 │   └── Prim.Tests.Cecil/
-└── samples/
-    ├── Generator/           # Yield/resume demonstration
-    └── MigrationDemo/       # Cross-process state migration
+├── samples/
+│   ├── Generator/           # Yield/resume demonstration (manual pattern)
+│   └── MigrationDemo/       # Suspend to a file, resume in another process
+├── benchmarks/              # BenchmarkDotNet suite
+└── docs/                    # Whitepaper, deep dive, TODO
 ```
 
 ## Quick Start
 
-> **Two paths, different maturity.** The currently working way to make a method
-> continuable is the *manual pattern* shown below: track state in instance fields
-> and hand-write a `catch (SuspendException)` block that captures the frame. This
-> is the path exercised by the tests and the `Generator` sample.
->
-> Automatic transformation — where you annotate a method with `[Continuable]` and
-> let the Roslyn source generator or the Mono.Cecil bytecode rewriter generate the
-> state machine for you — is **experimental and in progress**. It has known
-> correctness gaps and is not yet wired up end to end, so prefer the manual pattern
-> for working code today. See [Automatic Transformation (Experimental)](#automatic-transformation-experimental).
+There are two ways to make a method continuable:
+
+1. **Manual pattern** — write the suspend/capture code yourself. Nothing is generated, so it is the easiest way to see the mechanism.
+2. **`[Continuable]` source generator** — mark a method and let `Prim.Roslyn` generate a `*_Continuable` version of it that saves and restores its locals.
 
 ### Basic Yield/Resume (Manual Pattern)
 
-The example below writes the suspend/capture logic by hand. State that must survive
-a yield lives in instance fields (`Current`), and the `catch` block packs that state
-into a frame record before re-throwing.
+State that must survive a yield lives in instance fields (`Current`), and the `catch` block packs that state into a frame record before re-throwing.
 
 ```csharp
 using Prim.Core;
@@ -101,72 +104,112 @@ public class Counter
 }
 
 // Usage
+var runner = new ContinuationRunner();
 var counter = new Counter();
-var result = ContinuationRunner.Run(() => counter.CountTo(5));
+var result = runner.Run(() => counter.CountTo(5));
 
 while (result is ContinuationResult<int>.Suspended suspended)
 {
-    Console.WriteLine($"Yielded at: {counter.Current}");
-    result = ContinuationRunner.Resume<int>(suspended.State);
+    Console.WriteLine($"Yielded: {suspended.YieldedValue}");
+    result = runner.Resume(suspended.State, null, () => counter.CountTo(5));
 }
 
 Console.WriteLine($"Completed: {((ContinuationResult<int>.Completed)result).Value}");
 ```
+
+In this pattern nothing reads the captured slots back automatically: resume works because `counter` still holds `Current`. To resume in another process you restore the fields from `state.StackHead.Slots` yourself, as `samples/Generator` does.
+
+### Generated Continuations (`[Continuable]`)
+
+Reference the generator as an analyzer and mark methods with `[Continuable]`:
+
+```xml
+<ProjectReference Include="path/to/Prim.Roslyn.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+```
+
+```csharp
+public partial class Summer
+{
+    [Continuable]
+    public int SumTo(int n)
+    {
+        int sum = 0;
+        for (int i = 1; i <= n; i++)
+        {
+            sum += i;
+        }
+        return sum;
+    }
+}
+```
+
+For a `partial` class the generator adds an instance method `SumTo_Continuable(int n)`. For a non-partial class it emits a static `SummerContinuations.SumTo_Continuable(Summer instance, int n)` instead. Loop headers and calls between `[Continuable]` methods become yield points, and the generated code captures and restores locals, so the state can move between processes.
 
 ### Serialization and Migration
 
 ```csharp
 using Prim.Serialization;
 
-// Serialize state
+var runner = new ContinuationRunner();
+var result = runner.Run(() =>
+{
+    ScriptContext.Current.RequestYield();
+    return new Summer().SumTo_Continuable(10);
+});
+var suspended = (ContinuationResult<int>.Suspended)result;
+
 var serializer = new JsonContinuationSerializer();
-string json = serializer.SerializeToString(suspended.State);
-File.WriteAllText("state.json", json);
+File.WriteAllText("state.json", serializer.SerializeToString(suspended.State));
 
 // Later, in another process...
-string json = File.ReadAllText("state.json");
-var state = serializer.DeserializeFromString(json);
-var result = ContinuationRunner.Resume<int>(state);
+var state = serializer.DeserializeFromString(File.ReadAllText("state.json"));
+var resumed = new ContinuationRunner().Resume(state, null, () => new Summer().SumTo_Continuable(10));
+// resumed is Completed(55)
 ```
 
-### Automatic Transformation (Experimental)
+To resume without passing the entry point again, register it by method token and resume a `Continuation<T>`:
 
-The longer-term goal is to remove the manual boilerplate above. Instead of writing
-the `try`/`catch (SuspendException)` block yourself, you would mark a method with
-`[Continuable]` and have the framework generate the suspend/capture/resume state
-machine — much like the C# compiler does for `async`/`await`.
+```csharp
+var runner = new ContinuationRunner { EntryPoints = new EntryPointRegistry() };
+runner.EntryPoints.Register(state.StackHead.MethodToken, () => new Summer().SumTo_Continuable(10));
+var resumed = runner.Resume(new Continuation<int>(state));
+```
 
-Two implementations of this transformation exist in the tree:
+### Limitations of the Source Generator
 
-- **`Prim.Roslyn`** — a Roslyn source generator that rewrites `[Continuable]`
-  methods at compile time.
-- **`Prim.Cecil`** — a Mono.Cecil rewriter that transforms the compiled IL.
+- **Replay.** On resume, locals are restored and the method body runs again *from the top*; it does not jump to the yield point. Code before a yield point runs again, so any side effect there (writing a field, printing, sending a message) happens again. Put side effects that must not repeat after the yield point. See [whitepaper §6.3](docs/whitepaper.md).
+- **Diagnostics.** `PRIM001`: `[Continuable]` on a non-method member. `PRIM002`: async, iterator, generic, expression-bodied or body-less methods, and methods on generic types. `PRIM003` (error): a yield point inside `finally`, `lock` or a catch filter. In each case no code is generated for the member.
+- A continuable call inside an `if`/loop condition or a `switch` does not get its own yield point; it only resumes correctly because the whole statement is replayed.
 
-Both are **experimental and incomplete**. They are not yet wired into a working
-end-to-end path and have known correctness gaps (for example, not every local
-variable, control-flow shape, or nested call is captured and restored correctly).
-Treat them as research/work-in-progress rather than a supported way to build
-continuable methods. Until they are complete, use the manual pattern shown above.
+### IL Rewriting (`Prim.Cecil`, experimental)
+
+`AssemblyRewriter` rewrites a compiled assembly: `new AssemblyRewriter(options).Transform(inputPath, outputPath)`. It adds yield checks at loop back-edges (with optional instruction counting via `HandleYieldPointWithBudget`) and resume points at calls to other transformed methods. It does not use replay: it spills the evaluation stack and jumps back to the yield point. It is not yet hooked into the build, it skips yield points inside protected regions, and it skips methods with byref/pointer locals or `ref`/`out` parameters (listed in `SkippedMethods`).
 
 ## Core Concepts
 
 ### HostFrameRecord
-A linked list node representing a captured stack frame. Contains the method token, yield point ID, and captured local variables.
+A linked list node representing a captured stack frame. Contains the method token, yield point ID, captured slots, and a `Caller` link. The chain head (`ContinuationState.StackHead`) is the outermost frame.
 
 ### ScriptContext
-Thread-local context managing yield requests. Call `RequestYield()` to signal suspension, and `HandleYieldPoint()` at yield points to check and throw `SuspendException`.
+Thread-local context. `RequestYield()` sets the yield flag; `HandleYieldPoint()` throws `SuspendException` if it is set. `HandleYieldPointWithBudget()` also decrements `InstructionBudget` and suspends when it runs out, which is how untrusted code is preempted without a timer. The budget is not synchronised, so a context should only be used from one thread at a time.
 
 ### SuspendException
-Special exception used for stack unwinding during suspension. Each catch block captures its frame state and re-throws, building the frame chain.
+Unwinds the stack when suspending. Each catch block captures its frame and re-throws, building the frame chain.
 
 ### ContinuationRunner
-Entry point for running and resuming continuable computations. Handles the `SuspendException` and packages results as `Completed` or `Suspended`.
+An instance class. `Run` executes a computation and returns `Completed` or `Suspended`. `Resume(state, resumeValue, entryPoint)` restarts from a state. `Resume(continuation)` looks up the entry point in `EntryPoints`. If `Validator` is set, state is validated before every resume.
+
+## Security
+
+`ContinuationValidator` checks deserialized state before it is resumed: known method tokens (via registered `FrameDescriptor`s), valid yield point IDs, slot counts and types, maximum stack depth, and an allow-list of types. Set it on `ContinuationRunner.Validator` when state comes from anywhere you do not trust.
+
+**Known gap:** validation happens at resume, *after* deserialization. The JSON serializer honours `$type` on slot values without a serialization binder, so deserializing untrusted JSON can instantiate arbitrary types before the validator runs. Do not deserialize untrusted JSON state until this is fixed (tracked in [docs/TODO.md](docs/TODO.md)).
 
 ## Building
 
 ```bash
 dotnet build Prim.sln
-dotnet test
+dotnet test Prim.sln
 ```
 
 ## Running Samples
@@ -178,7 +221,7 @@ dotnet run --project samples/MigrationDemo/Prim.Samples.MigrationDemo
 
 ## Target Framework
 
-.NET Standard 2.0
+Libraries target .NET Standard 2.0. Tests, samples and benchmarks target .NET 8.
 
 ## License
 
