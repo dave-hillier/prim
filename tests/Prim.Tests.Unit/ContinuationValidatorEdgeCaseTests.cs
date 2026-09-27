@@ -339,7 +339,7 @@ namespace Prim.Tests.Unit
 
             validator.RegisterDescriptor(descriptor);
 
-            var frame = new HostFrameRecord(100, 0, new object[] { null }, null);
+            var frame = new HostFrameRecord(100, 0, new object?[] { null }, null);
             var state = new ContinuationState(frame);
 
             var result = validator.TryValidate(state);

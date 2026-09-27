@@ -1,3 +1,7 @@
+// Written without nullable annotations. Prim.Tests.Roslyn compiles this file
+// directly with nullable enabled, so state the context explicitly.
+#nullable disable
+
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;

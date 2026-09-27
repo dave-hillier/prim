@@ -218,13 +218,13 @@ namespace Prim.Tests.Unit
         [Fact]
         public void HostFrameRecord_GetStackDepth_DeepChain()
         {
-            HostFrameRecord current = null;
+            HostFrameRecord? current = null;
             for (int i = 0; i < 100; i++)
             {
                 current = new HostFrameRecord(i, 0, new object[0], current);
             }
 
-            Assert.Equal(100, current.GetStackDepth());
+            Assert.Equal(100, current!.GetStackDepth());
         }
 
         [Fact]
@@ -387,7 +387,7 @@ namespace Prim.Tests.Unit
         {
             var state = new ContinuationState(null);
             ContinuationResult<int> result = new ContinuationResult<int>.Suspended("hello", state);
-            object capturedValue = null;
+            object? capturedValue = null;
 
             result.Match(
                 c => { },

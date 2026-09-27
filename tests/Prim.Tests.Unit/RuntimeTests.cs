@@ -45,7 +45,7 @@ namespace Prim.Tests.Unit
             var original = ScriptContext.Current;
             var newContext = new ScriptContext();
 
-            ScriptContext insideContext = null;
+            ScriptContext? insideContext = null;
             newContext.RunWith(() =>
             {
                 insideContext = ScriptContext.Current;
@@ -92,7 +92,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void FrameCapture_GetSlotHandlesNull()
         {
-            var slots = new object[] { null };
+            var slots = new object?[] { null };
 
             // Reference type returns null
             Assert.Null(FrameCapture.GetSlot<string>(slots, 0));
@@ -247,7 +247,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void FrameCapture_GetSlot_NullableType()
         {
-            var slots = new object[] { null, 42 };
+            var slots = new object?[] { null, 42 };
 
             var nullable1 = FrameCapture.GetSlot<int?>(slots, 0);
             var nullable2 = FrameCapture.GetSlot<int?>(slots, 1);

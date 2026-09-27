@@ -295,13 +295,13 @@ namespace Prim.Tests.Unit
         [Fact]
         public void HostFrameRecord_DeepNestedChain()
         {
-            HostFrameRecord current = null;
+            HostFrameRecord? current = null;
             for (int i = 0; i < 100; i++)
             {
                 current = new HostFrameRecord(i, i, new object[] { i }, current);
             }
 
-            Assert.Equal(100, current.GetStackDepth());
+            Assert.Equal(100, current!.GetStackDepth());
         }
 
         [Fact]
@@ -355,7 +355,7 @@ namespace Prim.Tests.Unit
                 yieldPointIds: new int[0],
                 liveSlotsAtYieldPoint: new BitArray[0]);
 
-            Assert.Equal(0, descriptor.YieldPointIds.Length);
+            Assert.Empty(descriptor.YieldPointIds);
         }
 
         [Fact]

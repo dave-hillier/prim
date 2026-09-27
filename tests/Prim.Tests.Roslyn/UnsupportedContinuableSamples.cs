@@ -2,6 +2,9 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using Prim.Core;
 
+// Every member here is unsupported on purpose; PRIM002 is the expected result.
+#pragma warning disable PRIM002
+
 namespace Prim.Tests.Roslyn
 {
     /// <summary>

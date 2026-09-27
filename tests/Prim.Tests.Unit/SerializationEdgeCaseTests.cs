@@ -53,7 +53,7 @@ namespace Prim.Tests.Unit
             // v1 added a (SlotTypeResolver) ctor, so a bare null is ambiguous. Cast to
             // the settings overload this test targets; both null overloads throw.
             Assert.Throws<ArgumentNullException>(() =>
-                new JsonContinuationSerializer((Newtonsoft.Json.JsonSerializerSettings)null));
+                new JsonContinuationSerializer((Newtonsoft.Json.JsonSerializerSettings)null!));
         }
 
         #endregion
@@ -117,7 +117,7 @@ namespace Prim.Tests.Unit
         public void JsonSerializer_RoundTrips_SlotsWithNullValues()
         {
             var serializer = new JsonContinuationSerializer();
-            var frame = new HostFrameRecord(100, 0, new object[] { null, 42, null, "hello" }, null);
+            var frame = new HostFrameRecord(100, 0, new object?[] { null, 42, null, "hello" }, null);
             var state = new ContinuationState(frame);
 
             var bytes = serializer.Serialize(state);
@@ -133,7 +133,7 @@ namespace Prim.Tests.Unit
         {
             var serializer = new JsonContinuationSerializer();
 
-            HostFrameRecord current = null;
+            HostFrameRecord? current = null;
             for (int i = 0; i < 10; i++)
             {
                 current = new HostFrameRecord(i, i, new object[] { i }, current);
@@ -209,7 +209,7 @@ namespace Prim.Tests.Unit
         public void MessagePackSerializer_CustomTypeRegistry_NullThrows()
         {
             Assert.Throws<ArgumentNullException>(() =>
-                new MessagePackContinuationSerializer((ContinuationTypeRegistry)null));
+                new MessagePackContinuationSerializer((ContinuationTypeRegistry)null!));
         }
 
         #endregion

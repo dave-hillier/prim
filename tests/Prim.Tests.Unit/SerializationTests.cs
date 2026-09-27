@@ -121,9 +121,9 @@ namespace Prim.Tests.Unit
         // state.
         // ---------------------------------------------------------------------
 
-        public static object[] MixedTypeSlots()
+        public static object?[] MixedTypeSlots()
         {
-            return new object[]
+            return new object?[]
             {
                 42,                                                   // int
                 9_000_000_000L,                                       // long
@@ -175,8 +175,8 @@ namespace Prim.Tests.Unit
                     continue;
                 }
 
-                Assert.Equal(original[i].GetType(), jsonSlots[i].GetType());
-                Assert.Equal(original[i].GetType(), mpSlots[i].GetType());
+                Assert.Equal(original[i]!.GetType(), jsonSlots[i].GetType());
+                Assert.Equal(original[i]!.GetType(), mpSlots[i].GetType());
                 Assert.Equal(jsonSlots[i].GetType(), mpSlots[i].GetType());
                 Assert.Equal(original[i], jsonSlots[i]);
                 Assert.Equal(original[i], mpSlots[i]);
@@ -201,7 +201,7 @@ namespace Prim.Tests.Unit
                     continue;
                 }
 
-                Assert.Equal(original[i].GetType(), slots[i].GetType());
+                Assert.Equal(original[i]!.GetType(), slots[i].GetType());
                 Assert.Equal(original[i], slots[i]);
             }
         }
@@ -220,7 +220,7 @@ namespace Prim.Tests.Unit
         public sealed class SharedPayload
         {
             public int Id { get; set; }
-            public string Name { get; set; }
+            public string Name { get; set; } = "";
         }
 
         [Fact]
@@ -231,7 +231,7 @@ namespace Prim.Tests.Unit
             var state = new ContinuationState(frame);
 
             var resolver = new SlotTypeResolver();
-            resolver.AddResolver(name => name.StartsWith(typeof(SharedPayload).FullName) ? typeof(SharedPayload) : null);
+            resolver.AddResolver(name => name.StartsWith(typeof(SharedPayload).FullName!) ? typeof(SharedPayload) : null);
             var serializer = new JsonContinuationSerializer(
                 resolver, ContinuationTypeRegistry.Default.With(typeof(SharedPayload)));
 
@@ -287,9 +287,9 @@ namespace Prim.Tests.Unit
             Assert.Throws<InvalidOperationException>(() => serializer.Serialize(state));
         }
 
-        private static HostFrameRecord BuildDeepChain(int depth)
+        private static HostFrameRecord? BuildDeepChain(int depth)
         {
-            HostFrameRecord head = null;
+            HostFrameRecord? head = null;
             for (var i = 0; i < depth; i++)
             {
                 head = new HostFrameRecord(100 + i, 0, new object[] { i }, head);
@@ -425,7 +425,7 @@ namespace Prim.Tests.Unit
 
             var resolver = new SlotTypeResolver();
             resolver.AddResolver(name =>
-                name != null && name.StartsWith(typeof(SharedPayload).FullName) ? typeof(SharedPayload) : null);
+                name != null && name.StartsWith(typeof(SharedPayload).FullName!) ? typeof(SharedPayload) : null);
 
             var serializer = new MessagePackContinuationSerializer(resolver);
 
@@ -460,7 +460,7 @@ namespace Prim.Tests.Unit
             // validator that does not allow the payload type.
             var resolver = new SlotTypeResolver();
             resolver.AddResolver(name =>
-                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName!) ? typeof(ForbiddenPayload) : null);
 
             var producer = new JsonContinuationSerializer(resolver);
             var frame = new HostFrameRecord(100, 0, new object[] { new ForbiddenPayload { Value = 1 } }, null);
@@ -468,7 +468,7 @@ namespace Prim.Tests.Unit
 
             var consumerResolver = new SlotTypeResolver();
             consumerResolver.AddResolver(name =>
-                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName!) ? typeof(ForbiddenPayload) : null);
             var consumer = new JsonContinuationSerializer(consumerResolver)
             {
                 // Type checking on, but no descriptor required: the disallowed slot
@@ -489,7 +489,7 @@ namespace Prim.Tests.Unit
         {
             var resolver = new SlotTypeResolver();
             resolver.AddResolver(name =>
-                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName!) ? typeof(ForbiddenPayload) : null);
 
             var producer = new MessagePackContinuationSerializer(resolver);
             var frame = new HostFrameRecord(100, 0, new object[] { new ForbiddenPayload { Value = 1 } }, null);
@@ -497,7 +497,7 @@ namespace Prim.Tests.Unit
 
             var consumerResolver = new SlotTypeResolver();
             consumerResolver.AddResolver(name =>
-                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName) ? typeof(ForbiddenPayload) : null);
+                name != null && name.StartsWith(typeof(ForbiddenPayload).FullName!) ? typeof(ForbiddenPayload) : null);
             var consumer = new MessagePackContinuationSerializer(consumerResolver)
             {
                 // ForbiddenPayload is NOT registered, so revival is refused and the

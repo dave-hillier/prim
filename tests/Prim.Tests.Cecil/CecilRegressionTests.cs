@@ -181,7 +181,6 @@ namespace Prim.Tests.Cecil
             // Phase 2 creates array (net push = 1 after filling).
             // Total stack should be 1 (just the array), but is N+1.
 
-            int originalLocalCount = 3; // Simulate 3 original locals
             // Hardcoded -3 from line 315-326 means locals "captured" = Variables.Count - 3
             // With 3 added locals (context, frame, state), total Variables.Count = 6
             // localCount = 6 - 3 = 3
@@ -243,7 +242,7 @@ namespace Prim.Tests.Cecil
             // After fix: MethodTransformer now correctly resolves YieldPointId from
             // SuspendException, not HostFrameRecord. Verify the properties are distinct
             // (confirming the fix matters - using the wrong one would be a type mismatch).
-            Assert.NotEqual(hostGetter.MetadataToken, suspendGetter.MetadataToken);
+            Assert.NotEqual(hostGetter!.MetadataToken, suspendGetter!.MetadataToken);
         }
 
         // ---------------------------------------------------------------

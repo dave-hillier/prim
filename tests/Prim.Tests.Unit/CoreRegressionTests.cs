@@ -50,7 +50,7 @@ namespace Prim.Tests.Unit
         /// File: HostFrameRecord.cs:48-57
         /// </summary>
         [Fact]
-        public void Regression_GetStackDepth_InfiniteLoop_On_Circular_Caller_Chain()
+        public async Task Regression_GetStackDepth_InfiniteLoop_On_Circular_Caller_Chain()
         {
             var frame1 = new HostFrameRecord(100, 0, new object[0]);
             var frame2 = new HostFrameRecord(200, 0, new object[0], frame1);
@@ -58,7 +58,7 @@ namespace Prim.Tests.Unit
 
             // Fixed bug: This will hang forever - no cycle detection
             var task = Task.Run(() => frame1.GetStackDepth());
-            bool completed = task.Wait(TimeSpan.FromSeconds(2));
+            bool completed = await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(2))) == task;
 
             Assert.True(completed, "GetStackDepth() hung due to circular Caller chain - no cycle detection");
         }
