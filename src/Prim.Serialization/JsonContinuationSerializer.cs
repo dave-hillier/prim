@@ -14,8 +14,6 @@ namespace Prim.Serialization
     {
         private readonly JsonSerializerSettings _settings;
         private readonly SlotCodec _codec;
-        private readonly string _dateTimeOffsetTypeName;
-
         /// <summary>
         /// Optional validator run on every <see cref="Deserialize"/> /
         /// <see cref="DeserializeFromString"/> call BEFORE the state is returned.
@@ -87,7 +85,6 @@ namespace Prim.Serialization
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             _codec = new SlotCodec(resolver);
-            _dateTimeOffsetTypeName = resolver.GetTypeName(typeof(DateTimeOffset));
 
             // Bound parser recursion for caller-supplied settings that leave
             // MaxDepth unset, so a deep Caller chain throws a catchable
@@ -190,7 +187,7 @@ namespace Prim.Serialization
             var serializer = JsonSerializer.CreateDefault(_settings);
             serializer.CheckAdditionalContent = true;
             JsonContinuationStateDto dto;
-            using (var reader = new SlotDateReader(new System.IO.StringReader(json), _dateTimeOffsetTypeName))
+            using (var reader = new SlotDateReader(new System.IO.StringReader(json)))
             {
                 dto = serializer.Deserialize<JsonContinuationStateDto>(reader);
             }
@@ -245,13 +242,11 @@ namespace Prim.Serialization
                 @"^StackHead(\.Caller)*\.Slots\[\d+\]\.(TypeName|Value)$",
                 RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-            private readonly string _dateTimeOffsetTypeName;
             private string _slotTypeName;
 
-            public SlotDateReader(System.IO.TextReader reader, string dateTimeOffsetTypeName)
+            public SlotDateReader(System.IO.TextReader reader)
                 : base(reader)
             {
-                _dateTimeOffsetTypeName = dateTimeOffsetTypeName;
             }
 
             public override string ReadAsString()
@@ -266,7 +261,7 @@ namespace Prim.Serialization
             {
                 if (!AtEnvelopeProperty("Value")) return base.Read();
 
-                var isDateTimeOffset = _slotTypeName == _dateTimeOffsetTypeName;
+                var isDateTimeOffset = IsDateTimeOffsetTypeName(_slotTypeName);
                 _slotTypeName = null;
                 if (!isDateTimeOffset) return base.Read();
 
@@ -280,6 +275,15 @@ namespace Prim.Serialization
                 {
                     DateParseHandling = saved;
                 }
+            }
+
+            // Match on the full name, not the assembly-qualified name: state written by
+            // another runtime names DateTimeOffset with a different assembly version.
+            private static bool IsDateTimeOffsetTypeName(string typeName)
+            {
+                if (typeName == null) return false;
+                var fullName = typeName.Split(',')[0].Trim();
+                return fullName == typeof(DateTimeOffset).FullName;
             }
 
             private bool AtEnvelopeProperty(string name)

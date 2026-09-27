@@ -203,6 +203,23 @@ namespace Prim.Tests.Unit
             Assert.Equal(original.UtcDateTime, value.UtcDateTime);
         }
 
+        [Theory]
+        [InlineData("System.DateTimeOffset")]
+        [InlineData("System.DateTimeOffset, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+        public void JsonSerializer_DateTimeOffsetSlotFromOtherRuntime_KeepsOffset(string typeName)
+        {
+            // State written by another runtime names DateTimeOffset with a different
+            // assembly; the offset must still survive.
+            var json = "{\"Version\":1,\"StackHead\":{\"MethodToken\":100,\"YieldPointId\":0,\"Slots\":[" +
+                       "{\"TypeName\":\"" + typeName + "\",\"Value\":\"2026-09-27T12:00:00+01:00\"}]}}";
+
+            var restored = new JsonContinuationSerializer().DeserializeFromString(json);
+
+            var value = Assert.IsType<DateTimeOffset>(restored.StackHead.Slots[0]);
+            Assert.Equal(TimeSpan.FromHours(1), value.Offset);
+            Assert.Equal(new DateTime(2026, 9, 27, 11, 0, 0, DateTimeKind.Utc), value.UtcDateTime);
+        }
+
         [Fact]
         public void JsonSerializer_RoundTrips_DateTimeOffsetArraySlot_KeepsOffsets()
         {
