@@ -13,7 +13,6 @@ namespace Prim.Serialization
     {
         private readonly JsonSerializerSettings _settings;
         private readonly SlotCodec _codec;
-        private readonly ContinuationTypeRegistry _typeRegistry;
 
         /// <summary>
         /// Optional validator run on every <see cref="Deserialize"/> /
@@ -21,6 +20,9 @@ namespace Prim.Serialization
         /// When set, a state that fails validation throws
         /// <see cref="Prim.Core.ValidationException"/> instead of being handed back
         /// to the caller. Leave null for trusted/round-trip scenarios.
+        ///
+        /// Types on this validator's whitelist are also accepted as a slot
+        /// <c>$type</c> by the default <see cref="SlotSerializationBinder"/>.
         ///
         /// SECURITY: deserializing attacker-supplied continuation state and resuming
         /// it is a full takeover primitive. Set this validator (or validate at
@@ -59,7 +61,7 @@ namespace Prim.Serialization
         }
 
         /// <param name="settings">Json.NET settings. If they carry no SerializationBinder,
-        /// an allow-list binder is installed (see <paramref name="typeRegistry"/>). A binder
+        /// a <see cref="SlotSerializationBinder"/> is installed. A binder
         /// the caller set is kept, and the caller is then responsible for what it allows.</param>
         /// <param name="resolver">Resolves slot type names.</param>
         /// <param name="typeRegistry">Types a slot value's <c>$type</c> may name. Types allowed
@@ -71,7 +73,7 @@ namespace Prim.Serialization
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+            if (typeRegistry == null) throw new ArgumentNullException(nameof(typeRegistry));
             _codec = new SlotCodec(resolver);
 
             // Bound parser recursion for caller-supplied settings that leave
@@ -83,18 +85,14 @@ namespace Prim.Serialization
                 _settings.MaxDepth = FrameDepthGuard.MaxParserDepth;
             }
 
-            // Slot values carry $type (SlotEnvelope.Value). Check it against the
-            // allow-list before Json.NET constructs anything; validating the state
-            // afterwards is too late.
+            // Slot values carry a $type, which Json.NET instantiates during
+            // deserialize, before Validator runs. Without a binder that is a gadget
+            // construction primitive, so restrict $type to allowed types. A caller
+            // that supplies their own binder keeps it and owns that decision.
             if (_settings.SerializationBinder == null)
             {
-                _settings.SerializationBinder = new AllowListSerializationBinder(IsTypeAllowed);
+                _settings.SerializationBinder = new SlotSerializationBinder(resolver, typeRegistry, () => Validator);
             }
-        }
-
-        private bool IsTypeAllowed(Type type)
-        {
-            return _typeRegistry.IsAllowed(type) || (Validator?.IsTypeAllowed(type) ?? false);
         }
 
         private static JsonSerializerSettings DefaultSettings(Formatting formatting, NullValueHandling nullValueHandling)
@@ -175,17 +173,7 @@ namespace Prim.Serialization
             // depth is already bounded.
             ValidateJsonDepth(json);
 
-            JsonContinuationStateDto dto;
-            try
-            {
-                dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
-            }
-            catch (JsonSerializationException ex) when (ex.InnerException is ValidationException rejected)
-            {
-                // A $type refused by AllowListSerializationBinder: report it the same
-                // way as any other validation failure.
-                throw rejected;
-            }
+            var dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
             var state = ConvertFromDto(dto);
             Validator?.Validate(state);
             return state;

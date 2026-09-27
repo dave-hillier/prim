@@ -11,12 +11,14 @@ namespace Prim.Serialization
     {
         private readonly Dictionary<string, Type> _typeCache;
         private readonly List<Func<string, Type>> _customResolvers;
+        private readonly HashSet<Type> _builtInTypes;
 
         public SlotTypeResolver()
         {
             _typeCache = new Dictionary<string, Type>();
             _customResolvers = new List<Func<string, Type>>();
             RegisterBuiltInTypes();
+            _builtInTypes = new HashSet<Type>(_typeCache.Values);
         }
 
         /// <summary>
@@ -53,11 +55,14 @@ namespace Prim.Serialization
             }
 
             // Resolve assembly-qualified / full names. Resolution is NOT the security
-            // boundary. TypeName only drives coercion of a value that was already
-            // deserialized; which types may be constructed is decided earlier, by the
-            // JSON serializer's AllowListSerializationBinder and the MessagePack
-            // serializer's ContinuationTypeRegistry / Validator. Resolving here is
-            // required so GetTypeName(AssemblyQualifiedName) round-trips (issue #40).
+            // boundary and constructs nothing. Construction is gated elsewhere:
+            // - JSON: SlotSerializationBinder rejects a disallowed $type while Json.NET
+            //   reads the payload, before that type is instantiated.
+            // - MessagePack: the contractless resolver never reads type names from the
+            //   payload, and typed revival only runs for types the validator allows.
+            // ContinuationValidator.Validate then checks the rebuilt state. Resolving
+            // here is required so GetTypeName(AssemblyQualifiedName) round-trips
+            // (issue #40).
             var type = Type.GetType(typeName);
             if (type != null)
             {
@@ -76,6 +81,26 @@ namespace Prim.Serialization
             }
 
             throw new TypeLoadException($"Could not resolve type: {typeName}");
+        }
+
+        /// <summary>
+        /// True when <paramref name="type"/> is one of the built-in slot types or a
+        /// registered custom resolver maps the type's full or assembly-qualified name
+        /// to it. Types found only by the reflection fallback in
+        /// <see cref="ResolveType"/> do not count.
+        /// </summary>
+        public bool IsKnownType(Type type)
+        {
+            if (type == null) return false;
+            if (_builtInTypes.Contains(type)) return true;
+
+            foreach (var resolver in _customResolvers)
+            {
+                if (resolver(type.AssemblyQualifiedName) == type) return true;
+                if (resolver(type.FullName) == type) return true;
+            }
+
+            return false;
         }
 
         /// <summary>

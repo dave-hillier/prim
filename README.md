@@ -203,13 +203,18 @@ An instance class. `Run` executes a computation and returns `Completed` or `Susp
 
 Deserialized state is checked twice:
 
-1. **While deserializing.** A slot value may only have a type the serializer allows: the types in its `ContinuationTypeRegistry` (by default primitives, `string`, `decimal`, `DateTime`, `DateTimeOffset`, `TimeSpan`, `Guid`, plus enums, arrays and nullables of those), or types its `Validator` allows. For JSON, a `$type` naming anything else throws `ValidationException` before the object is constructed. To allow your own types:
+1. **While deserializing.** A slot value may only have a type the serializer allows. For JSON, `SlotSerializationBinder` checks each `$type` before the object is constructed and throws `JsonSerializationException` for anything else. A type is allowed if any of these permit it (arrays and nullables follow their element type):
+   - the `SlotTypeResolver` built-ins, or a resolver registered with `AddResolver`;
+   - the serializer's `ContinuationTypeRegistry` (by default primitives, `string`, `decimal`, `DateTime`, `DateTimeOffset`, `TimeSpan`, `Guid`, and enums);
+   - the serializer's `Validator` allow-list.
+
+   To allow your own types, use any of the three, for example:
 
    ```csharp
    var serializer = new JsonContinuationSerializer(ContinuationTypeRegistry.Default.With(typeof(MyState)));
    ```
 
-   If you pass your own `JsonSerializerSettings` with a `SerializationBinder` already set, that binder is used instead, and what it allows is up to you.
+   If you pass your own `JsonSerializerSettings` with a `SerializationBinder` already set, that binder is used instead, and what it allows is up to you. `MessagePackContinuationSerializer` uses the contractless resolver, which ignores type names in the payload; custom reference types are rebuilt only when the `Validator` allows them. Do not give it options with a typeless resolver for untrusted input.
 
 2. **Before resuming.** `ContinuationValidator` checks known method tokens (via registered `FrameDescriptor`s), valid yield point IDs, slot counts and types, maximum stack depth, and an allow-list of types. Set it on `ContinuationRunner.Validator` (or the serializer's `Validator`) when state comes from anywhere you do not trust.
 

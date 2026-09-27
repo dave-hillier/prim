@@ -49,7 +49,7 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 - Direct resume without re-supplying the entry point (`EntryPointRegistry`)
 - Serialization: JSON (with shared-reference preservation) and MessagePack, typed slot envelopes, parser depth limits
 - Validation of deserialized state (`ContinuationValidator`: method tokens, yield point IDs, slot counts and types, stack depth, type allow-list)
-- JSON `$type` checked against an allow-list before any object is constructed (`AllowListSerializationBinder`)
+- JSON `$type` checked against an allow-list before any object is constructed (`SlotSerializationBinder`)
 - Stable hashing for method tokens
 - IL analysis (CFG construction, stack simulation, yield point identification)
 - Cecil rewriter: back-edge yield checks, optional instruction counting, resume at calls to other transformed methods, output checked with `ilverify`

@@ -31,7 +31,9 @@ namespace Prim.Serialization
         /// <summary>
         /// The slot value. For JSON, reference identity of user-defined reference
         /// types is preserved across slots via PreserveReferencesHandling, and the
-        /// concrete type is carried via TypeNameHandling.
+        /// concrete type is carried via TypeNameHandling. Json.NET instantiates
+        /// that $type during deserialize, so JsonContinuationSerializer restricts
+        /// it with <see cref="SlotSerializationBinder"/>.
         /// </summary>
         [Key(1)]
         [JsonProperty(TypeNameHandling = TypeNameHandling.Auto)]

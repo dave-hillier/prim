@@ -13,7 +13,7 @@ namespace Prim.Tests.Unit
     public class SerializationRegressionTests
     {
         // Fixed bug 1 (JSON TypeNameHandling.Auto without a SerializationBinder) is
-        // covered by JsonTypeBindingTests, which checks deserialization behaviour.
+        // covered by SerializationTypeBindingTests, which checks deserialization behaviour.
 
         // ----------------------------------------------------------------
         // Fixed bug 5: SlotTypeResolver.GetTypeName has no case for sbyte, even
