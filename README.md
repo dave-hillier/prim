@@ -56,7 +56,7 @@ Prim/
 │   ├── Generator/           # Yield/resume demonstration (manual pattern)
 │   └── MigrationDemo/       # Suspend to a file, resume in another process
 ├── benchmarks/              # BenchmarkDotNet suite
-└── docs/                    # Whitepaper, deep dive, TODO, research/ (prior-art report and notes)
+└── docs/                    # Whitepaper, TODO, blog/ (draft post), research/ (prior art, WasmFX notes)
 ```
 
 ## Quick Start
