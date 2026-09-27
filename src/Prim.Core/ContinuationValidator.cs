@@ -66,6 +66,7 @@ namespace Prim.Core
             RegisterAllowedType(typeof(char));
             RegisterAllowedType(typeof(string));
             RegisterAllowedType(typeof(DateTime));
+            RegisterAllowedType(typeof(DateTimeOffset));
             RegisterAllowedType(typeof(TimeSpan));
             RegisterAllowedType(typeof(Guid));
         }
@@ -213,6 +214,30 @@ namespace Prim.Core
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Checks if a slot value is allowed: null, a value whose runtime type is
+        /// allowed, or an array whose non-null elements are all allowed (nested
+        /// arrays are checked up to <see cref="ValidationOptions.MaxArrayNestingDepth"/>).
+        /// </summary>
+        public bool IsValueAllowed(object value)
+        {
+            return IsValueAllowed(value, depth: 0);
+        }
+
+        private bool IsValueAllowed(object value, int depth)
+        {
+            if (value == null) return true;
+            if (value is not Array array) return IsTypeAllowed(value.GetType());
+            if (depth >= _options.MaxArrayNestingDepth) return false;
+
+            foreach (var element in array)
+            {
+                if (!IsValueAllowed(element, depth + 1)) return false;
+            }
+
+            return true;
         }
 
         /// <summary>

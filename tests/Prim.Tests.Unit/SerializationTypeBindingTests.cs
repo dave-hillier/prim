@@ -99,10 +99,13 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
-        public void Json_RegistryAllowedUserType_RoundTrips()
+        public void Json_ObsoleteRegistryAllowedUserType_StillRoundTrips()
         {
+            // ContinuationTypeRegistry is obsolete but must keep working for existing callers.
+#pragma warning disable CS0618
             var serializer = new JsonContinuationSerializer(
                 ContinuationTypeRegistry.Default.With(typeof(AllowedSlotPayload)));
+#pragma warning restore CS0618
 
             var state = new ContinuationState(new HostFrameRecord(1, 0,
                 new object[] { new AllowedSlotPayload { Number = 5 } }, null));

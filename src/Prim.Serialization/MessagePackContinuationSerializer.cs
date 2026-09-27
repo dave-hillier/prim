@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using Prim.Core;
 using MessagePack;
-using MessagePack.Formatters;
-using MessagePack.Resolvers;
 
 namespace Prim.Serialization
 {
@@ -16,7 +14,7 @@ namespace Prim.Serialization
         private readonly MessagePackSerializerOptions _options;
         private readonly SlotCodec _codec;
         private readonly SlotTypeResolver _resolver;
-        private readonly ContinuationTypeRegistry _typeRegistry;
+        private readonly ContinuationValidator _baseTypes;
 
         /// <summary>
         /// Optional validator. When set it does two things on <see cref="Deserialize"/>:
@@ -38,30 +36,66 @@ namespace Prim.Serialization
         public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public MessagePackContinuationSerializer()
-            : this(new SlotTypeResolver(), ContinuationTypeRegistry.Default)
+            : this(new SlotTypeResolver())
         {
         }
 
         public MessagePackContinuationSerializer(SlotTypeResolver resolver)
-            : this(resolver, ContinuationTypeRegistry.Default)
+            : this(DefaultOptions(), resolver, SlotTypes.BuiltIns)
         {
         }
 
-        // main's API: choose the allow-list registry while keeping v1's typed-envelope path.
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options)
+            : this(options, new SlotTypeResolver())
+        {
+        }
+
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver)
+            : this(options, resolver, SlotTypes.BuiltIns)
+        {
+        }
+
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
         public MessagePackContinuationSerializer(ContinuationTypeRegistry typeRegistry)
             : this(new SlotTypeResolver(), typeRegistry)
         {
         }
 
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
         public MessagePackContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
+            : this(DefaultOptions(), resolver, typeRegistry)
         {
+        }
+
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, ContinuationTypeRegistry typeRegistry)
+            : this(options, new SlotTypeResolver(), typeRegistry)
+        {
+        }
+
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
+        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
+            : this(options, resolver, (typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry))).AllowedTypes)
+        {
+        }
+
+        /// <param name="baseTypes">Slot types allowed even when <see cref="Validator"/> is null.</param>
+        private MessagePackContinuationSerializer(
+            MessagePackSerializerOptions options,
+            SlotTypeResolver resolver,
+            ContinuationValidator baseTypes)
+        {
+            _options = options ?? throw new ArgumentNullException(nameof(options));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             _resolver = resolver;
             _codec = new SlotCodec(resolver);
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+            _baseTypes = baseTypes ?? throw new ArgumentNullException(nameof(baseTypes));
+        }
 
+        private static MessagePackSerializerOptions DefaultOptions()
+        {
             // Use contractless resolver to serialize any object
-            _options = MessagePackSerializerOptions.Standard
+            return MessagePackSerializerOptions.Standard
                 .WithResolver(MessagePack.Resolvers.ContractlessStandardResolver.Instance)
                 .WithCompression(MessagePackCompression.Lz4BlockArray)
                 // Bound deserialize recursion so a deep Caller chain throws before
@@ -72,31 +106,6 @@ namespace Prim.Serialization
                 // is rejected with a catchable exception.
                 .WithSecurity(MessagePackSecurity.UntrustedData
                     .WithMaximumObjectGraphDepth(FrameDepthGuard.MaxParserDepth));
-        }
-
-        public MessagePackContinuationSerializer(MessagePackSerializerOptions options)
-            : this(options, new SlotTypeResolver(), ContinuationTypeRegistry.Default)
-        {
-        }
-
-        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver)
-            : this(options, resolver, ContinuationTypeRegistry.Default)
-        {
-        }
-
-        // main's API: explicit options + allow-list registry.
-        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, ContinuationTypeRegistry typeRegistry)
-            : this(options, new SlotTypeResolver(), typeRegistry)
-        {
-        }
-
-        public MessagePackContinuationSerializer(MessagePackSerializerOptions options, SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
-        {
-            _options = options ?? throw new ArgumentNullException(nameof(options));
-            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            _resolver = resolver;
-            _codec = new SlotCodec(resolver);
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
         }
 
         /// <inheritdoc/>
@@ -329,7 +338,7 @@ namespace Prim.Serialization
             // gated by main's registry allow-list here.
             if (IsDeferredToRevival(value)) return;
 
-            if (!_typeRegistry.IsAllowedValue(value))
+            if (!_baseTypes.IsValueAllowed(value) && !(Validator?.IsValueAllowed(value) ?? false))
             {
                 var typeName = value.GetType().FullName ?? "null";
                 throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for {context}.");
@@ -344,136 +353,6 @@ namespace Prim.Serialization
             if (value is System.Collections.IDictionary) return true;
             if (value is object[]) return true;
             return false;
-        }
-
-        private static MessagePackSerializerOptions CreateRestrictedOptions(ContinuationTypeRegistry typeRegistry)
-        {
-            var resolver = CompositeResolver.Create(new IFormatterResolver[]
-            {
-                new RestrictedObjectResolver(typeRegistry),
-                TypelessContractlessStandardResolver.Instance
-            });
-
-            return MessagePackSerializerOptions.Standard
-                .WithResolver(resolver)
-                .WithCompression(MessagePackCompression.Lz4BlockArray)
-                .WithSecurity(MessagePackSecurity.UntrustedData);
-        }
-    }
-
-    internal sealed class RestrictedObjectResolver : IFormatterResolver
-    {
-        private readonly ContinuationTypeRegistry _typeRegistry;
-
-        public RestrictedObjectResolver(ContinuationTypeRegistry typeRegistry)
-        {
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
-        }
-
-        public IMessagePackFormatter<T> GetFormatter<T>()
-        {
-            if (typeof(T) == typeof(object))
-            {
-                return (IMessagePackFormatter<T>)(object)new RestrictedObjectFormatter(_typeRegistry);
-            }
-
-            if (typeof(T) == typeof(object[]))
-            {
-                return (IMessagePackFormatter<T>)(object)new RestrictedObjectArrayFormatter(_typeRegistry);
-            }
-
-            return null;
-        }
-    }
-
-    internal sealed class RestrictedObjectFormatter : IMessagePackFormatter<object>
-    {
-        private readonly ContinuationTypeRegistry _typeRegistry;
-
-        public RestrictedObjectFormatter(ContinuationTypeRegistry typeRegistry)
-        {
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
-        }
-
-        public void Serialize(ref MessagePackWriter writer, object value, MessagePackSerializerOptions options)
-        {
-            if (!_typeRegistry.IsAllowedValue(value))
-            {
-                var typeName = value?.GetType().FullName ?? "null";
-                throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for YieldedValue or Slots.");
-            }
-
-            MessagePackSerializer.Serialize(ref writer, value, options.WithResolver(TypelessContractlessStandardResolver.Instance));
-        }
-
-        public object Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
-        {
-            var result = MessagePackSerializer.Deserialize<object>(ref reader, options.WithResolver(TypelessContractlessStandardResolver.Instance));
-            if (!_typeRegistry.IsAllowedValue(result))
-            {
-                var typeName = result?.GetType().FullName ?? "null";
-                throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for YieldedValue or Slots.");
-            }
-
-            return result;
-        }
-    }
-
-    internal sealed class RestrictedObjectArrayFormatter : IMessagePackFormatter<object[]>
-    {
-        private readonly ContinuationTypeRegistry _typeRegistry;
-
-        public RestrictedObjectArrayFormatter(ContinuationTypeRegistry typeRegistry)
-        {
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
-        }
-
-        public void Serialize(ref MessagePackWriter writer, object[] value, MessagePackSerializerOptions options)
-        {
-            if (value == null)
-            {
-                writer.WriteNil();
-                return;
-            }
-
-            writer.WriteArrayHeader(value.Length);
-
-            for (var i = 0; i < value.Length; i++)
-            {
-                var item = value[i];
-                if (!_typeRegistry.IsAllowedValue(item))
-                {
-                    var typeName = item?.GetType().FullName ?? "null";
-                    throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for Slots[{i}].");
-                }
-
-                MessagePackSerializer.Serialize(ref writer, item, options.WithResolver(TypelessContractlessStandardResolver.Instance));
-            }
-        }
-
-        public object[] Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
-        {
-            if (reader.TryReadNil())
-            {
-                return null;
-            }
-
-            var length = reader.ReadArrayHeader();
-            var result = new object[length];
-
-            for (var i = 0; i < length; i++)
-            {
-                var item = MessagePackSerializer.Deserialize<object>(ref reader, options.WithResolver(TypelessContractlessStandardResolver.Instance));
-                if (!_typeRegistry.IsAllowedValue(item))
-                {
-                    var typeName = item?.GetType().FullName ?? "null";
-                    throw new MessagePackSerializationException($"Type '{typeName}' is not allowed for Slots[{i}].");
-                }
-
-                result[i] = item;
-            }
-
-            return result;
         }
     }
 

@@ -18,7 +18,7 @@ namespace Prim.Serialization
     /// A type is allowed when any of these permit it:
     /// - the <see cref="SlotTypeResolver"/> built-ins or its registered resolvers
     ///   (<see cref="SlotTypeResolver.IsKnownType"/>);
-    /// - the <see cref="ContinuationTypeRegistry"/>;
+    /// - the built-in slot types of <see cref="ContinuationValidator"/>;
     /// - the current validator's whitelist (<see cref="ContinuationValidator.IsTypeAllowed"/>).
     /// Arrays and nullables are allowed when their element / underlying type is.
     /// </summary>
@@ -28,22 +28,36 @@ namespace Prim.Serialization
 
         private readonly DefaultSerializationBinder _inner = new DefaultSerializationBinder();
         private readonly SlotTypeResolver _resolver;
-        private readonly ContinuationTypeRegistry _typeRegistry;
+        private readonly ContinuationValidator _baseTypes;
         private readonly Func<ContinuationValidator> _validator;
 
         /// <param name="resolver">Slot type resolver whose built-ins and registered resolvers are trusted.</param>
-        /// <param name="typeRegistry">Allow-list registry.</param>
         /// <param name="validator">
         /// Returns the validator whose whitelist also applies, or null. Read on every
         /// bind so a validator assigned after construction takes effect.
         /// </param>
+        public SlotSerializationBinder(SlotTypeResolver resolver, Func<ContinuationValidator> validator)
+            : this(resolver, SlotTypes.BuiltIns, validator)
+        {
+        }
+
+        [Obsolete("ContinuationTypeRegistry is obsolete; use SlotSerializationBinder(resolver, validator) and register types on the validator.")]
         public SlotSerializationBinder(
             SlotTypeResolver resolver,
             ContinuationTypeRegistry typeRegistry,
             Func<ContinuationValidator> validator)
+            : this(resolver, (typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry))).AllowedTypes, validator)
+        {
+        }
+
+        /// <param name="baseTypes">Types allowed even when <paramref name="validator"/> returns null.</param>
+        internal SlotSerializationBinder(
+            SlotTypeResolver resolver,
+            ContinuationValidator baseTypes,
+            Func<ContinuationValidator> validator)
         {
             _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
-            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
+            _baseTypes = baseTypes ?? throw new ArgumentNullException(nameof(baseTypes));
             _validator = validator ?? (() => null);
         }
 
@@ -76,7 +90,7 @@ namespace Prim.Serialization
         {
             if (type == null) return false;
             if (_resolver.IsKnownType(type)) return true;
-            if (_typeRegistry.IsAllowed(type)) return true;
+            if (_baseTypes.IsTypeAllowed(type)) return true;
 
             var validator = _validator();
             if (validator != null && validator.IsTypeAllowed(type)) return true;
@@ -102,8 +116,8 @@ namespace Prim.Serialization
             var name = string.IsNullOrEmpty(assemblyName) ? typeName : $"{typeName}, {assemblyName}";
             return new JsonSerializationException(
                 $"Type '{name}' is not allowed in continuation state. " +
-                "Register it with a SlotTypeResolver resolver, a ContinuationTypeRegistry, " +
-                "or the serializer's ContinuationValidator.", inner);
+                "Register it on the serializer's ContinuationValidator " +
+                "or with a SlotTypeResolver resolver.", inner);
         }
     }
 }

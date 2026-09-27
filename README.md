@@ -203,16 +203,20 @@ An instance class. `Run` executes a computation and returns `Completed` or `Susp
 
 Deserialized state is checked twice:
 
-1. **While deserializing.** A slot value may only have a type the serializer allows. For JSON, `SlotSerializationBinder` checks each `$type` before the object is constructed and throws `JsonSerializationException` for anything else. A type is allowed if any of these permit it (arrays and nullables follow their element type):
-   - the `SlotTypeResolver` built-ins, or a resolver registered with `AddResolver`;
-   - the serializer's `ContinuationTypeRegistry` (by default primitives, `string`, `decimal`, `DateTime`, `DateTimeOffset`, `TimeSpan`, `Guid`, and enums);
-   - the serializer's `Validator` allow-list.
+1. **While deserializing.** A slot value may only have a type the serializer allows. For JSON, `SlotSerializationBinder` checks each `$type` before the object is constructed and throws `JsonSerializationException` for anything else. There is one type allow-list, owned by `ContinuationValidator`. A type is allowed if any of these permit it (arrays and nullables follow their element type):
+   - the validator's built-in types: primitives, `string`, `decimal`, `DateTime`, `DateTimeOffset`, `TimeSpan`, `Guid`, and enums. These are allowed even with no `Validator` set;
+   - types registered on the serializer's `Validator`;
+   - the `SlotTypeResolver` built-ins, or a resolver registered with `AddResolver` (JSON only).
 
-   To allow your own types, use any of the three, for example:
+   To allow your own types, register them on a validator. `ValidationOptions.Lenient` checks only the types, not frame descriptors:
 
    ```csharp
-   var serializer = new JsonContinuationSerializer(ContinuationTypeRegistry.Default.With(typeof(MyState)));
+   var validator = new ContinuationValidator(ValidationOptions.Lenient);
+   validator.RegisterAllowedType(typeof(MyState));
+   var serializer = new JsonContinuationSerializer { Validator = validator };
    ```
+
+   `ContinuationTypeRegistry` and the serializer constructors that take one are obsolete. They still work, and wrap a validator.
 
    If you pass your own `JsonSerializerSettings` with a `SerializationBinder` already set, that binder is used instead, and what it allows is up to you. `MessagePackContinuationSerializer` uses the contractless resolver, which ignores type names in the payload; custom reference types are rebuilt only when the `Validator` allows them. Do not give it options with a typeless resolver for untrusted input.
 
