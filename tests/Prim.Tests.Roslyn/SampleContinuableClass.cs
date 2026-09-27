@@ -633,7 +633,7 @@ namespace Prim.Tests.Roslyn
         /// Switch with pattern matching.
         /// </summary>
         [Continuable]
-        public string PatternMatchingSwitch(object value)
+        public string PatternMatchingSwitch(object? value)
         {
             string result = "";
             switch (value)
@@ -812,8 +812,11 @@ namespace Prim.Tests.Roslyn
         /// <summary>
         /// Expression-bodied method (simple case).
         /// </summary>
+        // Unsupported on purpose: the generator reports PRIM002 and skips it.
+#pragma warning disable PRIM002
         [Continuable]
         public int ExpressionBodied(int x) => x * 2;
+#pragma warning restore PRIM002
 
         #endregion
     }
