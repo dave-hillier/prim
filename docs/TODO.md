@@ -12,19 +12,6 @@ identity, below).
 
 ## What's Left
 
-### Security (High Priority)
-
-- **JSON deserialization instantiates types before validation.**
-  `SlotEnvelope.Value` uses `TypeNameHandling.Auto` and `JsonContinuationSerializer`
-  sets no serialization binder, so any `$type` in the payload is constructed during
-  deserialization. `ContinuationValidator` only runs later, at resume. Add an
-  allow-list binder, and fix the comment in `SlotTypeResolver.ResolveType`, which
-  says the whitelist is checked before construction.
-  Location: [SlotCodec.cs](../src/Prim.Serialization/SlotCodec.cs),
-  [JsonContinuationSerializer.cs](../src/Prim.Serialization/JsonContinuationSerializer.cs)
-- **MessagePack 2.5.187 has known vulnerabilities** (NuGet warnings NU1902/NU1903
-  on restore). Upgrade the package.
-
 ### Roslyn Source Generator
 
 The generator uses a replay model: on resume the body re-runs from the top over
@@ -34,10 +21,9 @@ restored locals, so side effects before a yield point repeat. Remaining gaps:
   own yield point; they rely on the whole statement being replayed.
 - Unsupported shapes (reported as `PRIM002`): async, iterator, generic and
   expression-bodied methods, and methods on generic types.
-- `StateMachineRewriter` is no longer used by the generator; it is kept only for
-  its unit tests. Delete it or bring it back into use.
-- The analyzer treats calls named `Yield()` / `CheckYield()` as explicit yield
-  points, but the runtime defines no such methods.
+- There is no explicit yield statement: suspension happens only at loop headers
+  and continuable calls. Adding one needs replay-aware emission so that a resumed
+  method does not suspend again at the same point.
 
 Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs)
 
@@ -55,11 +41,6 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 - MessagePack does not preserve reference identity between slots (the skipped test
   in `SerializationTests`). JSON does.
 
-### Repository
-
-- The README says the project is MIT licensed, but there is no `LICENSE` file.
-- Research notes live in both `reports/` and `research_notes/`.
-
 ## What's Done
 
 - Core types (`HostFrameRecord`, `ContinuationState`, `SuspendException`, `ContinuationResult`, `Continuation<T>`)
@@ -68,6 +49,7 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 - Direct resume without re-supplying the entry point (`EntryPointRegistry`)
 - Serialization: JSON (with shared-reference preservation) and MessagePack, typed slot envelopes, parser depth limits
 - Validation of deserialized state (`ContinuationValidator`: method tokens, yield point IDs, slot counts and types, stack depth, type allow-list)
+- JSON `$type` checked against an allow-list before any object is constructed (`AllowListSerializationBinder`)
 - Stable hashing for method tokens
 - IL analysis (CFG construction, stack simulation, yield point identification)
 - Cecil rewriter: back-edge yield checks, optional instruction counting, resume at calls to other transformed methods, output checked with `ilverify`
