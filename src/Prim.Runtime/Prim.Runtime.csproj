@@ -4,10 +4,4 @@
     <ProjectReference Include="..\Prim.Core\Prim.Core.csproj" />
   </ItemGroup>
 
-  <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
-    <Nullable>disable</Nullable>
-  </PropertyGroup>
-
 </Project>
