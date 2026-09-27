@@ -107,11 +107,6 @@ namespace Prim.Roslyn
         LoopBackEdge,
 
         /// <summary>
-        /// Method exit point.
-        /// </summary>
-        MethodExit,
-
-        /// <summary>
         /// A call to another continuable method that may yield.
         /// </summary>
         NestedMethodCall,
@@ -120,12 +115,7 @@ namespace Prim.Roslyn
         /// Call to an already-suffixed *_Continuable method, reported in standalone mode
         /// (no continuable name set supplied).
         /// </summary>
-        ContinuableCall,
-
-        /// <summary>
-        /// Await expression (for async methods that need continuation support).
-        /// </summary>
-        AwaitExpression
+        ContinuableCall
     }
 
     /// <summary>
@@ -585,14 +575,6 @@ namespace Prim.Roslyn
                 base.VisitInvocationExpression(node);
             }
 
-            public override void VisitAwaitExpression(AwaitExpressionSyntax node)
-            {
-                // Await expressions are potential yield points in async-continuable methods
-                var awaitPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.AwaitExpression);
-                awaitPoint.Description = $"Await: {node.Expression}";
-                base.VisitAwaitExpression(node);
-            }
-
             public override void VisitSwitchStatement(SwitchStatementSyntax node)
             {
                 // Track switch statements for completeness (they may contain loops)
@@ -654,12 +636,10 @@ namespace Prim.Roslyn
 
             var loopCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.LoopBackEdge);
             var callCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ContinuableCall);
-            var awaitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.AwaitExpression);
 
             var parts = new List<string>();
             if (loopCount > 0) parts.Add($"{loopCount} loop(s)");
             if (callCount > 0) parts.Add($"{callCount} continuable call(s)");
-            if (awaitCount > 0) parts.Add($"{awaitCount} await(s)");
 
             return string.Join(", ", parts);
         }

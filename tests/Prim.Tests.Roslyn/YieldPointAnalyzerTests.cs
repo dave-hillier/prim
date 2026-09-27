@@ -350,9 +350,7 @@ namespace Prim.Tests.Roslyn
         public void YieldPointKind_AllValuesAreDefined()
         {
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.LoopBackEdge));
-            Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.MethodExit));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.ContinuableCall));
-            Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.AwaitExpression));
         }
 
         #endregion
@@ -395,36 +393,17 @@ namespace Prim.Tests.Roslyn
         #region Await Expression Tests
 
         [Fact]
-        public void FindYieldPoints_AwaitExpression_ReturnsAwaitYieldPoint()
+        public void FindYieldPoints_AwaitExpression_IsNotAYieldPoint()
         {
+            // Async methods are rejected by the generator (PRIM002), so an await is not
+            // something the replay model can suspend at.
             var method = ParseMethod(@"
                 public async void TestMethod()
                 {
                     await Task.Delay(100);
                 }");
 
-            var yieldPoints = _analyzer.FindYieldPoints(method);
-
-            Assert.Single(yieldPoints);
-            Assert.Equal(YieldPointKind.AwaitExpression, yieldPoints[0].Kind);
-            Assert.Contains("Await", yieldPoints[0].Description);
-        }
-
-        [Fact]
-        public void FindYieldPoints_MultipleAwaits_ReturnsAllAwaitYieldPoints()
-        {
-            var method = ParseMethod(@"
-                public async void TestMethod()
-                {
-                    await Task.Delay(100);
-                    await Task.Delay(200);
-                    await Task.Delay(300);
-                }");
-
-            var yieldPoints = _analyzer.FindYieldPoints(method);
-
-            Assert.Equal(3, yieldPoints.Count);
-            Assert.All(yieldPoints, yp => Assert.Equal(YieldPointKind.AwaitExpression, yp.Kind));
+            Assert.Empty(_analyzer.FindYieldPoints(method));
         }
 
         #endregion
