@@ -8,8 +8,7 @@ namespace Prim.Tests.Roslyn
     /// Sample class with methods marked [Continuable] for testing the source generator.
     /// Tests various control flow constructs.
     ///
-    /// This file is the UNION of both lines of work: the replay-model (v1) samples
-    /// and main's StateMachineRewriter samples. Methods that contain a yield point
+    /// Methods that contain a yield point
     /// inside a finally/lock (a PRIM003 ERROR under the replay model) intentionally
     /// omit the [Continuable] attribute so the build stays green while the plain
     /// method remains available to the tests.

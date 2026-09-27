@@ -16,7 +16,7 @@ namespace Prim.Roslyn
         public YieldPointKind Kind { get; set; }
 
         /// <summary>
-        /// Human-readable description (used by main's StateMachineRewriter tests).
+        /// Human-readable description of the yield point.
         /// </summary>
         public string Description { get; set; }
 
@@ -122,7 +122,8 @@ namespace Prim.Roslyn
         NestedMethodCall,
 
         /// <summary>
-        /// Call to another continuable method (main's StateMachineRewriter model).
+        /// Call to an already-suffixed *_Continuable method, reported in standalone mode
+        /// (no continuable name set supplied).
         /// </summary>
         ContinuableCall,
 
@@ -597,9 +598,8 @@ namespace Prim.Roslyn
                     yieldPoint.InvocationSyntax = node;
                     yieldPoint.Description = $"Continuable call: {methodName}";
                 }
-                // Standalone analyzer mode (main's StateMachineRewriter tests): no name
-                // set supplied, so recognise the already-suffixed *_Continuable form and
-                // report it as main's ContinuableCall kind.
+                // Standalone analyzer mode: no name set supplied, so recognise the
+                // already-suffixed *_Continuable form and report it as ContinuableCall.
                 else if (_continuableMethodNames == null && methodName.EndsWith("_Continuable"))
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.ContinuableCall);

@@ -36,9 +36,6 @@
   <ItemGroup>
     <Compile Include="..\..\src\Prim.Roslyn\YieldPointAnalyzer.cs" Link="Analyzer\YieldPointAnalyzer.cs" />
     <Compile Include="..\..\src\Prim.Roslyn\ContinuationGenerator.cs" Link="Analyzer\ContinuationGenerator.cs" />
-    <!-- StateMachineRewriter is no longer the live generator (replay model), but its
-         direct unit tests (BugProof_RoslynTests) construct it, so link it here too. -->
-    <Compile Include="..\..\src\Prim.Roslyn\StateMachineRewriter.cs" Link="Analyzer\StateMachineRewriter.cs" />
   </ItemGroup>
 
 </Project>
