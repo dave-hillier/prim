@@ -89,7 +89,7 @@ namespace Prim.Roslyn
             defaultSeverity: DiagnosticSeverity.Warning,
             isEnabledByDefault: true);
 
-        // #24: a yield point (loop, explicit Yield()/CheckYield(), or continuable call)
+        // #24: a yield point (loop or continuable call)
         // inside a finally block, lock statement, or catch filter is a hard error.
         // Suspending out of such a region would abandon a CLR-managed region (the finally
         // would not complete, the monitor lock would not be released, an exception filter

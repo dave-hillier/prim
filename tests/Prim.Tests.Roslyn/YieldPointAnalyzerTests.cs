@@ -141,51 +141,24 @@ namespace Prim.Tests.Roslyn
 
         #endregion
 
-        #region Explicit Yield Tests
+        #region Yield-Named Calls
 
-        [Fact]
-        public void FindYieldPoints_ExplicitYieldCall_ReturnsExplicitYieldPoint()
+        [Theory]
+        [InlineData("Yield();")]
+        [InlineData("CheckYield();")]
+        [InlineData("Context.Yield();")]
+        [InlineData("System.Threading.Tasks.Task.Yield();")]
+        public void FindYieldPoints_CallNamedYield_IsNotAYieldPoint(string call)
         {
-            var method = ParseMethod(@"
+            // Yield points come from loop headers and continuable calls only; a method
+            // that happens to be called Yield or CheckYield is an ordinary call.
+            var method = ParseMethod($@"
                 public void TestMethod()
-                {
-                    Yield();
-                }");
+                {{
+                    {call}
+                }}");
 
-            var yieldPoints = _analyzer.FindYieldPoints(method);
-
-            Assert.Single(yieldPoints);
-            Assert.Equal(YieldPointKind.ExplicitYield, yieldPoints[0].Kind);
-        }
-
-        [Fact]
-        public void FindYieldPoints_CheckYieldCall_ReturnsExplicitYieldPoint()
-        {
-            var method = ParseMethod(@"
-                public void TestMethod()
-                {
-                    CheckYield();
-                }");
-
-            var yieldPoints = _analyzer.FindYieldPoints(method);
-
-            Assert.Single(yieldPoints);
-            Assert.Equal(YieldPointKind.ExplicitYield, yieldPoints[0].Kind);
-        }
-
-        [Fact]
-        public void FindYieldPoints_QualifiedYieldCall_ReturnsExplicitYieldPoint()
-        {
-            var method = ParseMethod(@"
-                public void TestMethod()
-                {
-                    Context.Yield();
-                }");
-
-            var yieldPoints = _analyzer.FindYieldPoints(method);
-
-            Assert.Single(yieldPoints);
-            Assert.Equal(YieldPointKind.ExplicitYield, yieldPoints[0].Kind);
+            Assert.Empty(_analyzer.FindYieldPoints(method));
         }
 
         #endregion
@@ -240,14 +213,14 @@ namespace Prim.Tests.Roslyn
         #region Mixed Tests
 
         [Fact]
-        public void FindYieldPoints_MixedLoopsAndYields_ReturnsAll()
+        public void FindYieldPoints_MixedLoopsAndContinuableCalls_ReturnsAll()
         {
             var method = ParseMethod(@"
                 public void TestMethod()
                 {
                     for (int i = 0; i < 10; i++)
                     {
-                        Yield();
+                        Step_Continuable();
                     }
                     while (true) { }
                 }");
@@ -255,7 +228,7 @@ namespace Prim.Tests.Roslyn
             var yieldPoints = _analyzer.FindYieldPoints(method);
 
             Assert.Equal(3, yieldPoints.Count);
-            Assert.Contains(yieldPoints, yp => yp.Kind == YieldPointKind.ExplicitYield);
+            Assert.Contains(yieldPoints, yp => yp.Kind == YieldPointKind.ContinuableCall);
             Assert.Equal(2, yieldPoints.Count(yp => yp.Kind == YieldPointKind.LoopBackEdge));
         }
 
@@ -313,7 +286,7 @@ namespace Prim.Tests.Roslyn
                                 sum++;
                                 if (sum > 50)
                                 {
-                                    Yield();
+                                    Step_Continuable();
                                 }
                             }
                         }
@@ -330,7 +303,7 @@ namespace Prim.Tests.Roslyn
 
             var yieldPoints = _analyzer.FindYieldPoints(method);
 
-            // for loop, while loop, Yield() call, foreach loop = 4 yield points
+            // for loop, while loop, continuable call, foreach loop = 4 yield points
             Assert.Equal(4, yieldPoints.Count);
         }
 
@@ -378,7 +351,6 @@ namespace Prim.Tests.Roslyn
         {
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.LoopBackEdge));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.MethodExit));
-            Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.ExplicitYield));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.ContinuableCall));
             Assert.True(System.Enum.IsDefined(typeof(YieldPointKind), YieldPointKind.AwaitExpression));
         }
@@ -520,14 +492,14 @@ namespace Prim.Tests.Roslyn
                 {
                     for (int i = 0; i < 10; i++)
                     {
-                        Yield();
+                        Step_Continuable();
                     }
                 }");
 
             var summary = _analyzer.GetYieldPointSummary(method);
 
             Assert.Contains("1 loop(s)", summary);
-            Assert.Contains("1 explicit yield(s)", summary);
+            Assert.Contains("1 continuable call(s)", summary);
         }
 
         #endregion

@@ -112,11 +112,6 @@ namespace Prim.Roslyn
         MethodExit,
 
         /// <summary>
-        /// Explicit yield call.
-        /// </summary>
-        ExplicitYield,
-
-        /// <summary>
         /// A call to another continuable method that may yield.
         /// </summary>
         NestedMethodCall,
@@ -145,7 +140,6 @@ namespace Prim.Roslyn
     ///
     /// A yield point is emitted for:
     ///   - each loop header (while / for / foreach / do)  -> LoopBackEdge
-    ///   - each explicit Yield() / CheckYield() call       -> ExplicitYield
     ///   - each statement that contains a call to a known continuable method
     ///     (statement granularity, including sub-expression calls) -> NestedMethodCall
     ///
@@ -334,8 +328,7 @@ namespace Prim.Roslyn
         }
 
         /// <summary>
-        /// Finds every yield point (loop header, explicit Yield()/CheckYield(), or
-        /// continuable call) that is lexically inside a context the suspend/replay model
+        /// Finds every yield point (loop header or continuable call) that is lexically inside a context the suspend/replay model
         /// cannot honour: a <c>finally</c> block, a <c>lock</c> statement body, or a
         /// <c>catch</c> exception filter (<c>when (...)</c>). Per whitepaper §10.2 these
         /// are hard errors — suspending out of a finally/lock/filter would abandon a
@@ -381,18 +374,6 @@ namespace Prim.Roslyn
         private bool IsYieldingInvocation(InvocationExpressionSyntax invocation)
         {
             var simpleName = GetSimpleMethodName(invocation);
-            var fullName = invocation.Expression switch
-            {
-                IdentifierNameSyntax id => id.Identifier.Text,
-                MemberAccessExpressionSyntax ma => ma.ToString(),
-                _ => ""
-            };
-
-            if (fullName == "Yield" || fullName == "CheckYield" ||
-                fullName.EndsWith(".Yield") || fullName.EndsWith(".CheckYield"))
-            {
-                return true;
-            }
 
             if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleName))
                 return true;
@@ -580,18 +561,11 @@ namespace Prim.Roslyn
                 var methodName = GetMethodName(node);
                 var simpleMethodName = GetSimpleMethodName(node);
 
-                // Check if this is a call to Suspend.Yield or similar
-                if (methodName == "Yield" || methodName == "CheckYield" ||
-                    methodName.EndsWith(".Yield") || methodName.EndsWith(".CheckYield"))
-                {
-                    var explicitPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.ExplicitYield);
-                    explicitPoint.Description = $"Explicit yield: {methodName}";
-                }
                 // Generator mode (v1 replay model): the emitter supplies the set of
                 // continuable method names by their ORIGINAL name (it rewrites them to
                 // *_Continuable afterwards), so when the set is present we match on it
                 // and emit a NestedMethodCall the replay emitter understands.
-                else if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName))
+                if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName))
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.NestedMethodCall);
                     yieldPoint.CalledMethodName = simpleMethodName;
@@ -679,13 +653,11 @@ namespace Prim.Roslyn
             if (yieldPoints.Count == 0) return "No yield points";
 
             var loopCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.LoopBackEdge);
-            var explicitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ExplicitYield);
             var callCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ContinuableCall);
             var awaitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.AwaitExpression);
 
             var parts = new List<string>();
             if (loopCount > 0) parts.Add($"{loopCount} loop(s)");
-            if (explicitCount > 0) parts.Add($"{explicitCount} explicit yield(s)");
             if (callCount > 0) parts.Add($"{callCount} continuable call(s)");
             if (awaitCount > 0) parts.Add($"{awaitCount} await(s)");
 
