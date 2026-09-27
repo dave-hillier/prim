@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Prim.Core;
 using Newtonsoft.Json;
 
@@ -13,7 +14,6 @@ namespace Prim.Serialization
     {
         private readonly JsonSerializerSettings _settings;
         private readonly SlotCodec _codec;
-
         /// <summary>
         /// Optional validator run on every <see cref="Deserialize"/> /
         /// <see cref="DeserializeFromString"/> call BEFORE the state is returned.
@@ -182,7 +182,16 @@ namespace Prim.Serialization
             // depth is already bounded.
             ValidateJsonDepth(json);
 
-            var dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
+            // Same as JsonConvert.DeserializeObject, but through a SlotDateReader so
+            // DateTimeOffset slots keep their offset.
+            var serializer = JsonSerializer.CreateDefault(_settings);
+            serializer.CheckAdditionalContent = true;
+            JsonContinuationStateDto dto;
+            using (var reader = new SlotDateReader(new System.IO.StringReader(json)))
+            {
+                dto = serializer.Deserialize<JsonContinuationStateDto>(reader);
+            }
+
             var state = ConvertFromDto(dto);
             Validator?.Validate(state);
             return state;
@@ -214,6 +223,74 @@ namespace Prim.Serialization
             {
                 // Other malformed-JSON errors are left for the typed deserialize to
                 // surface with its natural diagnostics.
+            }
+        }
+
+        /// <summary>
+        /// Reads the <see cref="SlotEnvelope.Value"/> of a DateTimeOffset slot with
+        /// <see cref="DateParseHandling.DateTimeOffset"/>. Json.NET's default
+        /// <see cref="DateParseHandling.DateTime"/> would turn the slot's date string
+        /// into a DateTime and lose the offset before SlotCodec.Coerce sees it.
+        /// Setting DateParseHandling.None on the whole serializer is not an option:
+        /// a DateTime in YieldedValue or in an object-typed member of a user object
+        /// would then come back as a string. Every other token is read as before.
+        /// Relies on TypeName being written before Value, as this serializer does.
+        /// </summary>
+        private sealed class SlotDateReader : JsonTextReader
+        {
+            private static readonly Regex EnvelopePropertyPath = new Regex(
+                @"^StackHead(\.Caller)*\.Slots\[\d+\]\.(TypeName|Value)$",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+            private string _slotTypeName;
+
+            public SlotDateReader(System.IO.TextReader reader)
+                : base(reader)
+            {
+            }
+
+            public override string ReadAsString()
+            {
+                var isTypeName = AtEnvelopeProperty("TypeName");
+                var value = base.ReadAsString();
+                if (isTypeName) _slotTypeName = value;
+                return value;
+            }
+
+            public override bool Read()
+            {
+                if (!AtEnvelopeProperty("Value")) return base.Read();
+
+                var isDateTimeOffset = IsDateTimeOffsetTypeName(_slotTypeName);
+                _slotTypeName = null;
+                if (!isDateTimeOffset) return base.Read();
+
+                var saved = DateParseHandling;
+                DateParseHandling = DateParseHandling.DateTimeOffset;
+                try
+                {
+                    return base.Read();
+                }
+                finally
+                {
+                    DateParseHandling = saved;
+                }
+            }
+
+            // Match on the full name, not the assembly-qualified name: state written by
+            // another runtime names DateTimeOffset with a different assembly version.
+            private static bool IsDateTimeOffsetTypeName(string typeName)
+            {
+                if (typeName == null) return false;
+                var fullName = typeName.Split(',')[0].Trim();
+                return fullName == typeof(DateTimeOffset).FullName;
+            }
+
+            private bool AtEnvelopeProperty(string name)
+            {
+                return TokenType == JsonToken.PropertyName
+                    && string.Equals(Value as string, name, StringComparison.OrdinalIgnoreCase)
+                    && EnvelopePropertyPath.IsMatch(Path);
             }
         }
 

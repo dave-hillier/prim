@@ -69,6 +69,17 @@ namespace Prim.Cecil
     /// </para>
     ///
     /// <para>
+    /// A yield point inside a user <c>try</c> block cannot be reached that way: the
+    /// dispatch sits outside the user's block. Each user try block that encloses a yield
+    /// point therefore gets its own nested dispatch at its first instruction, and resume
+    /// hops from dispatch to dispatch, entering each block at its start
+    /// (<see cref="BuildTryDispatches"/>). The user's handlers on those blocks are rewritten
+    /// so they never observe a suspension (<see cref="ProtectUserHandlers"/>). Yield points
+    /// inside handlers, filters and lock bodies are not placed (see
+    /// <see cref="YieldPointIdentifier"/>).
+    /// </para>
+    ///
+    /// <para>
     /// The catch records <c>__yieldPoint</c>, not <c>__ex.YieldPointId</c>: the exception
     /// carries the ID of the yield point that threw, which belongs to the innermost frame
     /// only. Every outer frame is suspended at a call to a transformed method, and must
@@ -118,6 +129,12 @@ namespace Prim.Cecil
         // depths). slots array length = _stackSlotBase + _totalSpillSlots.
         private int _totalSpillSlots;
 
+        // Frame-local "suspending" flag: set by a filter when a SuspendException unwinds
+        // through a user try/finally, read by the guard at the top of the finally so the
+        // finally does not run during a suspension. Null when no such try/finally encloses
+        // a yield point.
+        private VariableDefinition _suspendingLocal;
+
         // Cached type/method references
         private TypeReference _scriptContextType;
         private MethodReference _ensureCurrentMethod;
@@ -139,6 +156,10 @@ namespace Prim.Cecil
         // Diagnostics surfaced to the rewriter when a method cannot be transformed.
         public string SkipReason { get; private set; }
         public bool WasTransformed { get; private set; }
+
+        // Candidate yield points that were not placed (inside a catch handler, finally,
+        // fault, filter or lock body), described with their original IL offsets.
+        public IReadOnlyList<string> SkippedYieldPoints { get; private set; } = Array.Empty<string>();
 
         public MethodTransformer(MethodDefinition method, RewriterOptions options)
             : this(method, options, null)
@@ -165,12 +186,25 @@ namespace Prim.Cecil
         public void Transform()
         {
             var yieldPoints = _yieldPointIdentifier.FindYieldPoints();
+            SkippedYieldPoints = _yieldPointIdentifier.SkippedYieldPoints
+                .Select(s => s.ToString())
+                .ToList();
             if (yieldPoints.Count == 0) return;
 
             // #38: byref / pinned / pointer locals and ref/out parameters cannot be
             // round-tripped through object[] / GetSlot<T>. Rather than emit invalid IL,
             // skip the method and surface a diagnostic.
             if (!CanCaptureState(yieldPoints, out var reason))
+            {
+                SkipReason = reason;
+                return;
+            }
+
+            // User try blocks that enclose a yield point, and each yield point's chain of
+            // enclosing try blocks (outermost first). Computed on the original offsets,
+            // before any instruction is inserted.
+            var tryRegions = FindTryRegions(yieldPoints, out var tryChains);
+            if (!CanProtectTryRegions(tryRegions, out reason))
             {
                 SkipReason = reason;
                 return;
@@ -228,8 +262,19 @@ namespace Prim.Cecil
             // OUTSIDE the try region (after the catch handler), so we append it last.
             var realRetEntry = RewriteReturns(il, retLocal, hasReturnValue, out var realRet);
 
+            // A resume point inside a user try block cannot be reached by a branch from
+            // outside it, so each such block gets a nested dispatch at its first
+            // instruction. The method's dispatch jumps to the outermost enclosing block's
+            // dispatch instead of to the resume label.
+            var entryLabels = BuildTryDispatches(il, tryRegions, tryChains, stateLocal, resumeLabels);
+
+            // Keep the user's own handlers from observing a suspension: catch clauses
+            // that could catch SuspendException reject it, and finally/fault blocks do
+            // not run while the frame is unwinding to suspend.
+            ProtectUserHandlers(il, tryRegions);
+
             // Build the dispatch switch at the top of the try and wire resume labels.
-            var dispatchStart = BuildDispatch(il, originalFirst, stateLocal, resumeLabels);
+            var dispatchStart = BuildDispatch(il, originalFirst, stateLocal, entryLabels);
 
             // Build the catch block (appended after the body, before the real return).
             var (catchStart, catchEnd) = BuildCatchBlock(
@@ -664,7 +709,10 @@ namespace Prim.Cecil
         /// <summary>
         /// Inserts, immediately before the original first instruction, the dispatch
         /// sequence: ldloc __state; switch(resume labels). Falls through to the original
-        /// body (state 0). The returned instruction is the start of the try region.
+        /// body (state 0). The returned instruction is the start of the try region. For a
+        /// yield point inside a user try block, <paramref name="resumeLabels"/> holds the
+        /// nested dispatch at the start of its outermost enclosing block rather than the
+        /// resume label itself (see <see cref="BuildTryDispatches"/>).
         /// </summary>
         private Instruction BuildDispatch(
             ILProcessor il,
@@ -711,6 +759,493 @@ namespace Prim.Cecil
             }
 
             return dispatchStart;
+        }
+
+        // -- user try blocks ----------------------------------------------------------
+
+        /// <summary>
+        /// A user try block that encloses at least one yield point. The handlers of a try
+        /// with several catch clauses share one try range and form one region. C#
+        /// compiles <c>try/catch/finally</c> to two regions: an inner try/catch nested in
+        /// an outer try/finally, both starting at the same instruction.
+        /// </summary>
+        private sealed class TryRegion
+        {
+            public List<ExceptionHandler> Handlers { get; } = new List<ExceptionHandler>();
+
+            // Original IL offsets of the try range [StartOffset, EndOffset).
+            public int StartOffset { get; set; }
+            public int EndOffset { get; set; }
+
+            // First instruction of this region's nested dispatch (its new TryStart).
+            public Instruction Dispatch { get; set; }
+        }
+
+        /// <summary>
+        /// Finds the user try blocks that enclose a yield point, and for each such yield
+        /// point the chain of enclosing blocks, outermost first. Yield points in handlers,
+        /// filters and lock bodies were already rejected by the identifier, so every
+        /// region here is entered only through its try block.
+        /// </summary>
+        private List<TryRegion> FindTryRegions(
+            List<ILYieldPoint> yieldPoints, out Dictionary<int, List<TryRegion>> chains)
+        {
+            var all = new List<TryRegion>();
+            foreach (var handler in _method.Body.ExceptionHandlers)
+            {
+                int start = handler.TryStart.Offset;
+                int end = handler.TryEnd?.Offset ?? int.MaxValue;
+                var region = all.FirstOrDefault(r => r.StartOffset == start && r.EndOffset == end);
+                if (region == null)
+                {
+                    region = new TryRegion { StartOffset = start, EndOffset = end };
+                    all.Add(region);
+                }
+                region.Handlers.Add(handler);
+            }
+
+            chains = new Dictionary<int, List<TryRegion>>();
+            var used = new HashSet<TryRegion>();
+            foreach (var yp in yieldPoints)
+            {
+                int offset = yp.Instruction.Offset;
+                // Enclosing regions are properly nested, so ordering by start (then by
+                // end, descending, for blocks sharing a start) gives outermost first.
+                var chain = all
+                    .Where(r => offset >= r.StartOffset && offset < r.EndOffset)
+                    .OrderBy(r => r.StartOffset)
+                    .ThenByDescending(r => r.EndOffset)
+                    .ToList();
+                if (chain.Count == 0) continue;
+
+                chains[yp.Id] = chain;
+                used.UnionWith(chain);
+            }
+
+            return all.Where(used.Contains)
+                .OrderBy(r => r.StartOffset)
+                .ThenByDescending(r => r.EndOffset)
+                .ToList();
+        }
+
+        private static bool CanProtectTryRegions(List<TryRegion> regions, out string reason)
+        {
+            reason = null;
+            foreach (var handler in regions.SelectMany(r => r.Handlers))
+            {
+                if (handler.TryEnd == null || handler.HandlerStart == null)
+                {
+                    reason = "a try block enclosing a yield point has no explicit end; transformation unsupported";
+                    return false;
+                }
+
+                // ProtectUserHandlers branches to a filter's closing endfilter, which
+                // ECMA-335 requires to be the filter's last instruction.
+                if (handler.HandlerType == ExceptionHandlerType.Filter &&
+                    handler.HandlerStart.Previous?.OpCode.Code != Code.Endfilter)
+                {
+                    reason = "an exception filter enclosing a yield point does not end with endfilter; transformation unsupported";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Inserts a nested dispatch at the first instruction of every user try block that
+        /// encloses a yield point. ECMA-335 allows a protected block to be entered only at
+        /// its first instruction, so resume reaches a yield point inside nested try blocks
+        /// by hopping from dispatch to dispatch, one block at a time:
+        /// <code>
+        ///   .try {
+        ///   dispatch_R:                                  // new TryStart of R
+        ///       switch (__state - 1) {                   // one target per yield point id:
+        ///           id in a try nested in R:  goto dispatch_child;   // enter at its start
+        ///           id directly in R:         goto enter_id;
+        ///           otherwise:                goto body; // not in R: normal entry
+        ///       }
+        ///       br body                                  // __state == 0: normal entry
+        ///   enter_id:
+        ///       __state = 0; br resume_id                // clear so a later entry into
+        ///                                                //   any try block runs normally
+        ///   body:                                        // original first instruction
+        ///       ...
+        ///   }
+        /// </code>
+        /// On the normal path the dispatch costs one switch and one branch per entry into
+        /// the block. Clearing <c>__state</c> matters when the block is re-entered, e.g.
+        /// on the next iteration of an enclosing loop. Returns, per yield point, the
+        /// target for the method-level dispatch: the outermost enclosing block's dispatch,
+        /// or the resume label itself for a yield point outside any user try block.
+        /// </summary>
+        private Dictionary<int, Instruction> BuildTryDispatches(
+            ILProcessor il,
+            List<TryRegion> regions,
+            Dictionary<int, List<TryRegion>> chains,
+            VariableDefinition stateLocal,
+            Dictionary<int, Instruction> resumeLabels)
+        {
+            var entryLabels = new Dictionary<int, Instruction>(resumeLabels);
+            if (regions.Count == 0) return entryLabels;
+
+            int maxId = resumeLabels.Keys.Max();
+
+            // Create every dispatch head first so an outer dispatch can target an inner one.
+            foreach (var region in regions)
+            {
+                region.Dispatch = il.Create(OpCodes.Ldloc, stateLocal);
+            }
+
+            // Regions are ordered outermost first. Blocks that share a first instruction
+            // then stack up as [dispatch_outer][dispatch_inner][body], and each inner
+            // block starts at its own dispatch, inside the outer one.
+            foreach (var region in regions)
+            {
+                var body = region.Handlers[0].TryStart;
+                var targets = new Instruction[maxId + 1];
+                var trampolines = new List<Instruction>();
+
+                for (int id = 0; id <= maxId; id++)
+                {
+                    targets[id] = body;
+                    if (!chains.TryGetValue(id, out var chain)) continue;
+
+                    int depth = chain.IndexOf(region);
+                    if (depth < 0) continue;
+
+                    if (depth < chain.Count - 1)
+                    {
+                        targets[id] = chain[depth + 1].Dispatch;
+                    }
+                    else
+                    {
+                        var enter = il.Create(OpCodes.Ldc_I4_0);
+                        trampolines.Add(enter);
+                        trampolines.Add(il.Create(OpCodes.Stloc, stateLocal));
+                        trampolines.Add(il.Create(OpCodes.Br, resumeLabels[id]));
+                        targets[id] = enter;
+                    }
+                }
+
+                var seq = new List<Instruction>
+                {
+                    region.Dispatch,
+                    il.Create(OpCodes.Ldc_I4_1),
+                    il.Create(OpCodes.Sub),
+                    il.Create(OpCodes.Switch, targets),
+                };
+                if (trampolines.Count > 0)
+                {
+                    seq.Add(il.Create(OpCodes.Br, body));
+                    seq.AddRange(trampolines);
+                }
+
+                foreach (var instr in seq)
+                {
+                    il.InsertBefore(body, instr);
+                }
+
+                // A region that ended at the old first instruction (a preceding sibling
+                // try or handler) now ends at the dispatch, which belongs to this block.
+                ReplaceRegionEnds(body, region.Dispatch);
+                foreach (var handler in region.Handlers)
+                {
+                    handler.TryStart = region.Dispatch;
+                }
+
+                // Branches from outside the block that entered it at its first instruction
+                // must now enter at the dispatch. Branches from inside the block (a loop
+                // back to its first instruction) keep their target and skip the dispatch.
+                RetargetEntryBranches(body, region.Dispatch, region.Handlers[0].TryEnd);
+            }
+
+            foreach (var kvp in chains)
+            {
+                entryLabels[kvp.Key] = kvp.Value[0].Dispatch;
+            }
+            return entryLabels;
+        }
+
+        /// <summary>
+        /// Redirects every branch to <paramref name="oldTarget"/> whose source lies outside
+        /// the block [<paramref name="blockStart"/>, <paramref name="blockEnd"/>).
+        /// </summary>
+        private void RetargetEntryBranches(Instruction oldTarget, Instruction blockStart, Instruction blockEnd)
+        {
+            var instructions = _method.Body.Instructions;
+            int start = instructions.IndexOf(blockStart);
+            int end = instructions.IndexOf(blockEnd);
+
+            for (int i = 0; i < instructions.Count; i++)
+            {
+                if (i >= start && i < end) continue;
+
+                var instruction = instructions[i];
+                if (ReferenceEquals(instruction.Operand, oldTarget))
+                {
+                    instruction.Operand = blockStart;
+                }
+                else if (instruction.Operand is Instruction[] targets)
+                {
+                    for (int t = 0; t < targets.Length; t++)
+                    {
+                        if (ReferenceEquals(targets[t], oldTarget))
+                        {
+                            targets[t] = blockStart;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Moves every region END (TryEnd, HandlerEnd) at <paramref name="oldEnd"/> to
+        /// <paramref name="newEnd"/>, after code has been inserted before
+        /// <paramref name="oldEnd"/> that must not belong to those regions. Region starts
+        /// are left alone.
+        /// </summary>
+        private void ReplaceRegionEnds(Instruction oldEnd, Instruction newEnd)
+        {
+            foreach (var handler in _method.Body.ExceptionHandlers)
+            {
+                if (handler.TryEnd == oldEnd) handler.TryEnd = newEnd;
+                if (handler.HandlerEnd == oldEnd) handler.HandlerEnd = newEnd;
+            }
+        }
+
+        /// <summary>
+        /// Keeps the handlers of every user try block that encloses a yield point from
+        /// observing a suspension, so that a suspended-then-resumed method behaves as if it
+        /// had never suspended:
+        /// <list type="bullet">
+        /// <item>A catch clause whose type could catch <c>SuspendException</c>
+        /// (<c>SuspendException</c>, <c>Exception</c> or <c>object</c>, i.e. a bare catch)
+        /// becomes a filter that rejects it. A filter runs in the first pass of exception
+        /// dispatch, so the handler never runs and the exception travels on to the
+        /// method-level capture catch. A rethrowing <c>catch (SuspendException)</c> added
+        /// inside the user's try would not work: its rethrow would still be inside the
+        /// user's try, and the user's catch would take it from there.</item>
+        /// <item>A user filter gets a prefix that rejects <c>SuspendException</c> before
+        /// the user's filter code runs.</item>
+        /// <item>A finally or fault block gets a guard that skips it while the frame is
+        /// unwinding to suspend. The flag it reads is set by a filter wrapped around the
+        /// try block. Filters run before any finally in the second pass, so the flag is
+        /// set in time. The finally runs once, when the method really leaves the block
+        /// after resuming (or on a real exception).</item>
+        /// </list>
+        /// </summary>
+        private void ProtectUserHandlers(ILProcessor il, List<TryRegion> regions)
+        {
+            foreach (var handler in regions.SelectMany(r => r.Handlers).ToList())
+            {
+                switch (handler.HandlerType)
+                {
+                    case ExceptionHandlerType.Catch:
+                        if (CanCatchSuspendException(handler.CatchType))
+                        {
+                            ConvertCatchToFilter(il, handler);
+                        }
+                        break;
+
+                    case ExceptionHandlerType.Filter:
+                        PrependSuspendRejection(il, handler);
+                        break;
+
+                    case ExceptionHandlerType.Finally:
+                    case ExceptionHandlerType.Fault:
+                        GuardFinally(il, handler);
+                        break;
+                }
+            }
+        }
+
+        private bool CanCatchSuspendException(TypeReference catchType)
+        {
+            if (catchType == null) return false;
+            var name = catchType.FullName;
+            return name == "System.Object" ||
+                   name == "System.Exception" ||
+                   name == _suspendExceptionType.FullName;
+        }
+
+        /// <summary>
+        /// Rewrites <c>catch (T)</c> into a filter that accepts T except SuspendException:
+        /// <code>
+        ///   filter {
+        ///       dup; isinst SuspendException; brtrue reject
+        ///       isinst T; ldnull; cgt.un; br done        // (pop; ldc.i4.1 when T is object)
+        ///   reject:
+        ///       pop; ldc.i4.0
+        ///   done:
+        ///       endfilter
+        ///   }
+        ///   { castclass T; ...original handler... }      // a filter's handler receives object
+        /// </code>
+        /// </summary>
+        private void ConvertCatchToFilter(ILProcessor il, ExceptionHandler handler)
+        {
+            var catchType = handler.CatchType;
+            var handlerStart = handler.HandlerStart;
+            bool catchesObject = catchType.FullName == "System.Object";
+
+            var reject = il.Create(OpCodes.Pop);
+            var done = il.Create(OpCodes.Endfilter);
+            var filter = new List<Instruction>
+            {
+                il.Create(OpCodes.Dup),
+                il.Create(OpCodes.Isinst, _suspendExceptionType),
+                il.Create(OpCodes.Brtrue, reject),
+            };
+            if (catchesObject)
+            {
+                filter.Add(il.Create(OpCodes.Pop));
+                filter.Add(il.Create(OpCodes.Ldc_I4_1));
+            }
+            else
+            {
+                filter.Add(il.Create(OpCodes.Isinst, catchType));
+                filter.Add(il.Create(OpCodes.Ldnull));
+                filter.Add(il.Create(OpCodes.Cgt_Un));
+            }
+            filter.Add(il.Create(OpCodes.Br, done));
+            filter.Add(reject);
+            filter.Add(il.Create(OpCodes.Ldc_I4_0));
+            filter.Add(done);
+
+            foreach (var instr in filter)
+            {
+                il.InsertBefore(handlerStart, instr);
+            }
+            ReplaceRegionEnds(handlerStart, filter[0]);
+
+            handler.HandlerType = ExceptionHandlerType.Filter;
+            handler.FilterStart = filter[0];
+            handler.CatchType = null;
+
+            if (!catchesObject)
+            {
+                var cast = il.Create(OpCodes.Castclass, catchType);
+                il.InsertBefore(handlerStart, cast);
+                handler.HandlerStart = cast;
+            }
+        }
+
+        /// <summary>
+        /// Prefixes a user filter with a SuspendException rejection:
+        /// <code>
+        ///   dup; isinst SuspendException; brfalse userFilter
+        ///   pop; ldc.i4.0; br endfilter                  // the filter's own endfilter
+        ///   userFilter: ...original filter...
+        /// </code>
+        /// </summary>
+        private void PrependSuspendRejection(ILProcessor il, ExceptionHandler handler)
+        {
+            var userFilter = handler.FilterStart;
+            var endFilter = handler.HandlerStart.Previous;
+
+            var prefix = new List<Instruction>
+            {
+                il.Create(OpCodes.Dup),
+                il.Create(OpCodes.Isinst, _suspendExceptionType),
+                il.Create(OpCodes.Brfalse, userFilter),
+                il.Create(OpCodes.Pop),
+                il.Create(OpCodes.Ldc_I4_0),
+                il.Create(OpCodes.Br, endFilter),
+            };
+            foreach (var instr in prefix)
+            {
+                il.InsertBefore(userFilter, instr);
+            }
+            ReplaceRegionEnds(userFilter, prefix[0]);
+            handler.FilterStart = prefix[0];
+        }
+
+        /// <summary>
+        /// Stops a finally (or fault) block from running while the frame unwinds to
+        /// suspend. The try block is wrapped in a filter clause that never accepts but
+        /// records that a SuspendException is passing, and the finally checks that flag
+        /// first:
+        /// <code>
+        ///   .try {                                       // user try/finally
+        ///     .try {                                     // added, same first instruction
+        ///       ...user try block...
+        ///     }
+        ///     filter {
+        ///       isinst SuspendException; brfalse no
+        ///       ldc.i4.1; stloc __suspending
+        ///     no:
+        ///       ldc.i4.0; endfilter                      // never handles
+        ///     } { pop; rethrow }                         // unreachable
+        ///   }
+        ///   finally {
+        ///     ldloc __suspending; brfalse body; endfinally
+        ///   body:
+        ///     ...user finally...
+        ///   }
+        /// </code>
+        /// The flag is never cleared: once set, the frame is on its way out, and a resumed
+        /// invocation starts with it false (InitLocals).
+        /// </summary>
+        private void GuardFinally(ILProcessor il, ExceptionHandler handler)
+        {
+            var body = _method.Body;
+            if (_suspendingLocal == null)
+            {
+                _suspendingLocal = AddLocal(_module.TypeSystem.Boolean);
+            }
+
+            // Guard at the top of the finally.
+            var finallyBody = handler.HandlerStart;
+            var guard = new List<Instruction>
+            {
+                il.Create(OpCodes.Ldloc, _suspendingLocal),
+                il.Create(OpCodes.Brfalse, finallyBody),
+                il.Create(OpCodes.Endfinally),
+            };
+            foreach (var instr in guard)
+            {
+                il.InsertBefore(finallyBody, instr);
+            }
+            ReplaceRegionEnds(finallyBody, guard[0]);
+            handler.HandlerStart = guard[0];
+
+            // The flag-setting filter clause, placed at the end of the user's try block
+            // (which ends in an unconditional transfer, so nothing falls into it).
+            var finallyStart = handler.HandlerStart;
+            var noSuspend = il.Create(OpCodes.Ldc_I4_0);
+            var filterHandler = il.Create(OpCodes.Pop);
+            var clause = new List<Instruction>
+            {
+                il.Create(OpCodes.Isinst, _suspendExceptionType),
+                il.Create(OpCodes.Brfalse, noSuspend),
+                il.Create(OpCodes.Ldc_I4_1),
+                il.Create(OpCodes.Stloc, _suspendingLocal),
+                noSuspend,
+                il.Create(OpCodes.Endfilter),
+                filterHandler,
+                il.Create(OpCodes.Rethrow),
+            };
+            foreach (var instr in clause)
+            {
+                il.InsertBefore(finallyStart, instr);
+            }
+
+            // Regions nested in the user's try that ended where the finally begins now end
+            // before the filter clause; the user's try itself still ends at the finally.
+            ReplaceRegionEnds(finallyStart, clause[0]);
+            handler.TryEnd = finallyStart;
+
+            var flagClause = new ExceptionHandler(ExceptionHandlerType.Filter)
+            {
+                TryStart = handler.TryStart,
+                TryEnd = clause[0],
+                FilterStart = clause[0],
+                HandlerStart = filterHandler,
+                HandlerEnd = finallyStart,
+            };
+
+            // The exception table lists inner clauses before outer ones.
+            body.ExceptionHandlers.Insert(body.ExceptionHandlers.IndexOf(handler), flagClause);
         }
 
         // -- catch block --------------------------------------------------------------

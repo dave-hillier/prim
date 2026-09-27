@@ -141,7 +141,7 @@ User code may have its own exception handlers. A `catch (Exception)` would inter
 
 3. **Forbid yield points inside protected regions**: If no yield point is placed inside a `try`, `catch`, `filter` or `finally` region, the method's own handlers can never observe its own suspension.
 
-Prim's source generator uses option 2. Its bytecode rewriter uses option 3, which is simpler but more restrictive (§10.2). Neither fully solves the `finally` problem for *callers*: if a transformed method suspends while its caller is inside a `try`/`finally`, the caller's `finally` runs during unwinding. LSL has no exception handling, so Second Life's scripts never raised any of these questions.
+Prim's source generator uses option 2. Its bytecode rewriter uses option 2 for `try` bodies, turning each catch clause that could catch `SuspendException` into a filter that rejects it, and option 3 for handlers, filters and `lock` bodies (§10.2). The rewriter also handles `finally`. It wraps the `try` block in an extra filter clause that never accepts, but sets a frame-local flag when a `SuspendException` passes. The `finally` checks the flag first and does nothing if it is set. Filters run in the first pass of exception dispatch, before any `finally` runs, so the flag is set in time. The `finally` then runs once, when the method really leaves the block after resuming, as if it had never suspended. This also covers a rewritten method suspended at a call inside its own `try`/`finally`. The source generator does not do this: under replay its `finally` runs on every suspension. Neither transformer can protect an *untransformed* caller: if a transformed method suspends while such a caller is inside a `try`/`finally`, the caller's `finally` runs during unwinding. LSL has no exception handling, so Second Life's scripts never raised any of these questions.
 
 ---
 
@@ -225,6 +225,8 @@ catch (SuspendException ex) { /* capture, as in §3.2 */ }
 ```
 
 Entering the `try` at its first instruction is always legal, and every branch from the dispatch `switch` to a resume label stays within the same region.
+
+A yield point inside the method's own `try` block needs one more step, because that block is nested inside the capture `try` and the dispatch is outside it. Each such block gets a nested dispatch as its first instruction. The outer `switch` jumps to the start of the outermost block that encloses the yield point. That block's dispatch jumps to the start of the next inner block, and so on, until the innermost block's dispatch clears `state` and jumps to the resume label. Every hop enters a block at its first instruction. A resume that left `state` set would send a later normal entry into the same block (for example on the next iteration of an enclosing loop) back to the old yield point. On the normal path `state` is 0 and each nested dispatch falls through into the block.
 
 The same rule constrains the rest of the rewrite. A `ret` is not allowed inside a protected region either, so each original `ret` becomes a store to a return-value local followed by `leave` to a single return placed after the handler.
 
@@ -551,9 +553,9 @@ For the Second Life use case (scripts running mixed workloads, suspending occasi
 
 ### 10.2 Limitations
 
-**No yield inside `finally`, `lock` or filters**: The CLR requires finally blocks to complete, and a filter cannot be left by an exception. Suspending in any of these would violate the runtime's invariants [12]. A `lock` statement compiles to a `try`/`finally`, so it inherits the restriction. Prim's bytecode rewriter is more conservative still: it places no yield points inside any protected region, including `try` bodies. That means a long-running loop inside a `try` block is not preemptible.
+**No yield inside `finally`, `lock` or filters**: The CLR requires finally blocks to complete, and a filter cannot be left by an exception. Suspending in any of these would violate the runtime's invariants [12]. A `lock` statement compiles to a `try`/`finally`, so it inherits the restriction. A catch handler is excluded too: it can only be entered by the runtime while an exception is dispatched, so there is nowhere to resume. Prim's bytecode rewriter places yield points inside `try` bodies (§4.2, §3.3) but skips those inside any handler, filter or `lock` body, which it recognizes as a `try` whose `finally` calls `Monitor.Exit`. A long-running loop inside a `catch` or `finally` is therefore not preemptible.
 
-**Exception handlers complicate things**: User try/catch blocks interact with the capture mechanism (§3.3). The transformation must ensure `SuspendException` escapes user handlers, and callers' `finally` blocks still run during unwinding.
+**Exception handlers complicate things**: User try/catch blocks interact with the capture mechanism (§3.3). The transformation must ensure `SuspendException` escapes user handlers. The source generator's `finally` blocks, and those of untransformed callers, still run during unwinding.
 
 **Debugger interaction**: Transformed code differs from source. Breakpoints, stepping, and variable inspection may behave unexpectedly. Preserving debug symbols requires extra work.
 
@@ -573,7 +575,7 @@ The original Second Life system used bytecode rewriting (with RAIL, a precursor 
 
 ### 10.4 Status of Prim
 
-Prim is an open-source reimplementation of these techniques for .NET, and its two transformers are experimental. The bytecode rewriter implements §4 as described: CFG-based stack simulation, spilling, the verifiable prologue/dispatch split, and optional instruction counting. Its output is checked with `ilverify` and executed in tests. Calls to other `[Continuable]` methods get a resume label (without a yield check), and each frame records its own yield point in a local, so a continuation can span a chain of rewritten methods (§3.2, §4.5). It does not yet place yield points inside protected regions. The source generator uses replay (§6.3), handles nested continuable calls, and filters `SuspendException` out of user catch clauses. JSON serialization preserves reference identity; MessagePack preserves slot types but not shared references.
+Prim is an open-source reimplementation of these techniques for .NET, and its two transformers are experimental. The bytecode rewriter implements §4 as described: CFG-based stack simulation, spilling, the verifiable prologue/dispatch split, and optional instruction counting. Its output is checked with `ilverify` and executed in tests. Calls to other `[Continuable]` methods get a resume label (without a yield check), and each frame records its own yield point in a local, so a continuation can span a chain of rewritten methods (§3.2, §4.5). It places yield points inside `try` blocks, using a nested dispatch per block (§4.2), and keeps them out of handlers, filters and `lock` bodies (§10.2). The source generator uses replay (§6.3), handles nested continuable calls, and filters `SuspendException` out of user catch clauses. JSON serialization preserves reference identity; MessagePack preserves slot types but not shared references.
 
 ---
 

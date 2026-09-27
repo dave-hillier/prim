@@ -170,6 +170,13 @@ namespace Prim.Serialization
             {
                 if (value is DateTimeOffset dto) return dto;
                 if (value is string dos) return DateTimeOffset.Parse(dos, null, System.Globalization.DateTimeStyles.RoundtripKind);
+                // MessagePack writes a DateTimeOffset as [clock time, offset in
+                // minutes], which the contractless resolver revives as object[].
+                if (value is object[] { Length: 2 } parts && parts[0] is DateTime clock)
+                {
+                    var minutes = Convert.ToInt32(parts[1], System.Globalization.CultureInfo.InvariantCulture);
+                    return new DateTimeOffset(clock.Ticks, TimeSpan.FromMinutes(minutes));
+                }
                 return value;
             }
 

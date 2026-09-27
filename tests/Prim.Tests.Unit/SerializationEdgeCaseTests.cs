@@ -185,6 +185,90 @@ namespace Prim.Tests.Unit
             Assert.Equal(42, restored.Version);
         }
 
+        // Json.NET used to parse the DateTimeOffset's ISO string into a DateTime
+        // before SlotCodec.Coerce saw it, so the slot came back as a DateTime and
+        // the offset was lost. DateTimeOffset.Equals ignores the offset, so check
+        // Offset explicitly.
+        [Fact]
+        public void JsonSerializer_RoundTrips_DateTimeOffsetSlot_KeepsOffset()
+        {
+            var serializer = new JsonContinuationSerializer();
+            var original = new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.FromHours(1));
+            var state = new ContinuationState(new HostFrameRecord(100, 0, new object[] { original }, null));
+
+            var restored = serializer.Deserialize(serializer.Serialize(state));
+
+            var value = Assert.IsType<DateTimeOffset>(restored.StackHead.Slots[0]);
+            Assert.Equal(original.Offset, value.Offset);
+            Assert.Equal(original.UtcDateTime, value.UtcDateTime);
+        }
+
+        [Theory]
+        [InlineData("System.DateTimeOffset")]
+        [InlineData("System.DateTimeOffset, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089")]
+        public void JsonSerializer_DateTimeOffsetSlotFromOtherRuntime_KeepsOffset(string typeName)
+        {
+            // State written by another runtime names DateTimeOffset with a different
+            // assembly; the offset must still survive.
+            var json = "{\"Version\":1,\"StackHead\":{\"MethodToken\":100,\"YieldPointId\":0,\"Slots\":[" +
+                       "{\"TypeName\":\"" + typeName + "\",\"Value\":\"2026-09-27T12:00:00+01:00\"}]}}";
+
+            var restored = new JsonContinuationSerializer().DeserializeFromString(json);
+
+            var value = Assert.IsType<DateTimeOffset>(restored.StackHead.Slots[0]);
+            Assert.Equal(TimeSpan.FromHours(1), value.Offset);
+            Assert.Equal(new DateTime(2026, 9, 27, 11, 0, 0, DateTimeKind.Utc), value.UtcDateTime);
+        }
+
+        [Fact]
+        public void JsonSerializer_RoundTrips_DateTimeOffsetArraySlot_KeepsOffsets()
+        {
+            var serializer = new JsonContinuationSerializer();
+            var original = new[]
+            {
+                new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.FromHours(1)),
+                new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.FromHours(-5.5))
+            };
+            var state = new ContinuationState(new HostFrameRecord(100, 0, new object[] { original }, null));
+
+            var restored = serializer.Deserialize(serializer.Serialize(state));
+
+            var values = Assert.IsType<DateTimeOffset[]>(restored.StackHead.Slots[0]);
+            Assert.Equal(original.Length, values.Length);
+            for (var i = 0; i < original.Length; i++)
+            {
+                Assert.Equal(original[i].Offset, values[i].Offset);
+                Assert.Equal(original[i].UtcDateTime, values[i].UtcDateTime);
+            }
+        }
+
+        [Theory]
+        [InlineData(DateTimeKind.Utc)]
+        [InlineData(DateTimeKind.Local)]
+        [InlineData(DateTimeKind.Unspecified)]
+        public void JsonSerializer_RoundTrips_DateTimeSlots_KeepKind(DateTimeKind kind)
+        {
+            var serializer = new JsonContinuationSerializer();
+            var original = new DateTime(2026, 9, 27, 12, 0, 0, kind);
+            var array = new[] { original, original.AddHours(1) };
+            var state = new ContinuationState(
+                new HostFrameRecord(100, 0, new object[] { original, array }, null), original);
+
+            var restored = serializer.Deserialize(serializer.Serialize(state));
+
+            var value = Assert.IsType<DateTime>(restored.StackHead.Slots[0]);
+            Assert.Equal(original, value);
+            Assert.Equal(kind, value.Kind);
+
+            var values = Assert.IsType<DateTime[]>(restored.StackHead.Slots[1]);
+            Assert.Equal(array, values);
+            Assert.All(values, v => Assert.Equal(kind, v.Kind));
+
+            var yielded = Assert.IsType<DateTime>(restored.YieldedValue);
+            Assert.Equal(original, yielded);
+            Assert.Equal(kind, yielded.Kind);
+        }
+
         #endregion
 
         #region MessagePack Serializer - Null Handling
@@ -267,6 +351,32 @@ namespace Prim.Tests.Unit
             var restored = serializer.Deserialize(bytes);
 
             Assert.Equal(1, restored.Version);
+        }
+
+        // The contractless resolver revives an object-typed DateTimeOffset as its
+        // wire shape, object[] { clock time, offset minutes }. DateTimeOffset.Equals
+        // ignores the offset, so check Offset explicitly.
+        [Fact]
+        public void MessagePackSerializer_RoundTrips_DateTimeOffsetSlots_KeepOffset()
+        {
+            var serializer = new MessagePackContinuationSerializer();
+            var original = new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.FromHours(1));
+            var array = new[] { original, new DateTimeOffset(2026, 9, 27, 12, 0, 0, TimeSpan.FromHours(-5.5)) };
+            var state = new ContinuationState(new HostFrameRecord(100, 0, new object[] { original, array }, null));
+
+            var restored = serializer.Deserialize(serializer.Serialize(state));
+
+            var value = Assert.IsType<DateTimeOffset>(restored.StackHead.Slots[0]);
+            Assert.Equal(original.Offset, value.Offset);
+            Assert.Equal(original.UtcDateTime, value.UtcDateTime);
+
+            var values = Assert.IsType<DateTimeOffset[]>(restored.StackHead.Slots[1]);
+            Assert.Equal(array.Length, values.Length);
+            for (var i = 0; i < array.Length; i++)
+            {
+                Assert.Equal(array[i].Offset, values[i].Offset);
+                Assert.Equal(array[i].UtcDateTime, values[i].UtcDateTime);
+            }
         }
 
         #endregion
