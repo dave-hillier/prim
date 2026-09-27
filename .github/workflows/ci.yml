@@ -22,7 +22,7 @@ jobs:
         run: dotnet restore Prim.sln
 
       - name: Build
-        run: dotnet build Prim.sln --no-restore --configuration Release
+        run: dotnet build Prim.sln --no-restore --configuration Release -p:TreatWarningsAsErrors=true
 
       - name: Test
         run: dotnet test Prim.sln --no-build --configuration Release --verbosity normal
