@@ -13,6 +13,7 @@ namespace Prim.Serialization
     {
         private readonly JsonSerializerSettings _settings;
         private readonly SlotCodec _codec;
+        private readonly ContinuationTypeRegistry _typeRegistry;
 
         /// <summary>
         /// Optional validator run on every <see cref="Deserialize"/> /
@@ -28,36 +29,49 @@ namespace Prim.Serialization
         public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public JsonContinuationSerializer()
-            : this(new SlotTypeResolver())
+            : this(new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
         public JsonContinuationSerializer(SlotTypeResolver resolver)
+            : this(resolver, ContinuationTypeRegistry.Default)
         {
-            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            _codec = new SlotCodec(resolver);
-            _settings = new JsonSerializerSettings
-            {
-                TypeNameHandling = TypeNameHandling.None,
-                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
-                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
-                Formatting = Formatting.Indented,
-                NullValueHandling = NullValueHandling.Include,
-                // Bound parser recursion so a deep Caller chain throws a catchable
-                // JsonReaderException instead of overflowing the stack (issue #42).
-                MaxDepth = FrameDepthGuard.MaxParserDepth
-            };
+        }
+
+        public JsonContinuationSerializer(ContinuationTypeRegistry typeRegistry)
+            : this(new SlotTypeResolver(), typeRegistry)
+        {
+        }
+
+        public JsonContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
+            : this(DefaultSettings(Formatting.Indented, NullValueHandling.Include), resolver, typeRegistry)
+        {
         }
 
         public JsonContinuationSerializer(JsonSerializerSettings settings)
-            : this(settings, new SlotTypeResolver())
+            : this(settings, new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
         public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver)
+            : this(settings, resolver, ContinuationTypeRegistry.Default)
+        {
+        }
+
+        /// <param name="settings">Json.NET settings. If they carry no SerializationBinder,
+        /// an allow-list binder is installed (see <paramref name="typeRegistry"/>). A binder
+        /// the caller set is kept, and the caller is then responsible for what it allows.</param>
+        /// <param name="resolver">Resolves slot type names.</param>
+        /// <param name="typeRegistry">Types a slot value's <c>$type</c> may name. Types allowed
+        /// by <see cref="Validator"/> are also accepted.</param>
+        public JsonContinuationSerializer(
+            JsonSerializerSettings settings,
+            SlotTypeResolver resolver,
+            ContinuationTypeRegistry typeRegistry)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            _typeRegistry = typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry));
             _codec = new SlotCodec(resolver);
 
             // Bound parser recursion for caller-supplied settings that leave
@@ -68,6 +82,34 @@ namespace Prim.Serialization
             {
                 _settings.MaxDepth = FrameDepthGuard.MaxParserDepth;
             }
+
+            // Slot values carry $type (SlotEnvelope.Value). Check it against the
+            // allow-list before Json.NET constructs anything; validating the state
+            // afterwards is too late.
+            if (_settings.SerializationBinder == null)
+            {
+                _settings.SerializationBinder = new AllowListSerializationBinder(IsTypeAllowed);
+            }
+        }
+
+        private bool IsTypeAllowed(Type type)
+        {
+            return _typeRegistry.IsAllowed(type) || (Validator?.IsTypeAllowed(type) ?? false);
+        }
+
+        private static JsonSerializerSettings DefaultSettings(Formatting formatting, NullValueHandling nullValueHandling)
+        {
+            return new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.None,
+                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
+                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
+                Formatting = formatting,
+                NullValueHandling = nullValueHandling,
+                // Bound parser recursion so a deep Caller chain throws a catchable
+                // JsonReaderException instead of overflowing the stack (issue #42).
+                MaxDepth = FrameDepthGuard.MaxParserDepth
+            };
         }
 
         /// <summary>
@@ -75,17 +117,10 @@ namespace Prim.Serialization
         /// </summary>
         public static JsonContinuationSerializer Compact()
         {
-            return new JsonContinuationSerializer(new JsonSerializerSettings
-            {
-                TypeNameHandling = TypeNameHandling.None,
-                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
-                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
-                Formatting = Formatting.None,
-                NullValueHandling = NullValueHandling.Ignore,
-                // Bound parser recursion so a deep Caller chain throws a catchable
-                // JsonReaderException instead of overflowing the stack (issue #42).
-                MaxDepth = FrameDepthGuard.MaxParserDepth
-            });
+            return new JsonContinuationSerializer(
+                DefaultSettings(Formatting.None, NullValueHandling.Ignore),
+                new SlotTypeResolver(),
+                ContinuationTypeRegistry.Default);
         }
 
         /// <inheritdoc/>
@@ -140,7 +175,17 @@ namespace Prim.Serialization
             // depth is already bounded.
             ValidateJsonDepth(json);
 
-            var dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
+            JsonContinuationStateDto dto;
+            try
+            {
+                dto = JsonConvert.DeserializeObject<JsonContinuationStateDto>(json, _settings);
+            }
+            catch (JsonSerializationException ex) when (ex.InnerException is ValidationException rejected)
+            {
+                // A $type refused by AllowListSerializationBinder: report it the same
+                // way as any other validation failure.
+                throw rejected;
+            }
             var state = ConvertFromDto(dto);
             Validator?.Validate(state);
             return state;

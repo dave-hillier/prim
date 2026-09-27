@@ -398,6 +398,17 @@ namespace Prim.Serialization
 
         public static ContinuationTypeRegistry Default { get; } = new ContinuationTypeRegistry(DefaultTypes);
 
+        /// <summary>
+        /// Returns a new registry that allows this registry's types plus <paramref name="types"/>.
+        /// </summary>
+        public ContinuationTypeRegistry With(params Type[] types)
+        {
+            if (types == null) throw new ArgumentNullException(nameof(types));
+            var combined = new HashSet<Type>(_allowedTypes);
+            combined.UnionWith(types);
+            return new ContinuationTypeRegistry(combined);
+        }
+
         public bool IsAllowed(Type type)
         {
             if (type == null) return true;

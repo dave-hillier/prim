@@ -53,10 +53,11 @@ namespace Prim.Serialization
             }
 
             // Resolve assembly-qualified / full names. Resolution is NOT the security
-            // boundary — whether a resolved type may actually be instantiated is gated
-            // downstream by the whitelist (ContinuationValidator.IsTypeAllowed /
-            // ContinuationTypeRegistry) before any object is constructed. Resolving here
-            // is required so GetTypeName(AssemblyQualifiedName) round-trips (issue #40).
+            // boundary. TypeName only drives coercion of a value that was already
+            // deserialized; which types may be constructed is decided earlier, by the
+            // JSON serializer's AllowListSerializationBinder and the MessagePack
+            // serializer's ContinuationTypeRegistry / Validator. Resolving here is
+            // required so GetTypeName(AssemblyQualifiedName) round-trips (issue #40).
             var type = Type.GetType(typeName);
             if (type != null)
             {
