@@ -232,8 +232,7 @@ namespace Prim.Tests.Unit
 
             var resolver = new SlotTypeResolver();
             resolver.AddResolver(name => name.StartsWith(typeof(SharedPayload).FullName!) ? typeof(SharedPayload) : null);
-            var serializer = new JsonContinuationSerializer(
-                resolver, ContinuationTypeRegistry.Default.With(typeof(SharedPayload)));
+            var serializer = new JsonContinuationSerializer(resolver);
 
             var restored = RoundTrip(serializer, state);
             var slots = restored.StackHead.Slots;

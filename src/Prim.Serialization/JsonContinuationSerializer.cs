@@ -21,8 +21,9 @@ namespace Prim.Serialization
         /// <see cref="Prim.Core.ValidationException"/> instead of being handed back
         /// to the caller. Leave null for trusted/round-trip scenarios.
         ///
-        /// Types on this validator's whitelist are also accepted as a slot
-        /// <c>$type</c> by the default <see cref="SlotSerializationBinder"/>.
+        /// This validator's type allow-list is the one to extend: types on it are
+        /// accepted as a slot <c>$type</c> by the default
+        /// <see cref="SlotSerializationBinder"/>, in addition to the built-in types.
         ///
         /// SECURITY: deserializing attacker-supplied continuation state and resuming
         /// it is a full takeover primitive. Set this validator (or validate at
@@ -31,49 +32,58 @@ namespace Prim.Serialization
         public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public JsonContinuationSerializer()
-            : this(new SlotTypeResolver(), ContinuationTypeRegistry.Default)
+            : this(new SlotTypeResolver())
         {
         }
 
         public JsonContinuationSerializer(SlotTypeResolver resolver)
-            : this(resolver, ContinuationTypeRegistry.Default)
+            : this(DefaultSettings(Formatting.Indented, NullValueHandling.Include), resolver, SlotTypes.BuiltIns)
         {
         }
 
+        public JsonContinuationSerializer(JsonSerializerSettings settings)
+            : this(settings, new SlotTypeResolver())
+        {
+        }
+
+        /// <param name="settings">Json.NET settings. If they carry no SerializationBinder,
+        /// a <see cref="SlotSerializationBinder"/> is installed. A binder the caller set
+        /// is kept, and the caller is then responsible for what it allows.</param>
+        /// <param name="resolver">Resolves slot type names.</param>
+        public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver)
+            : this(settings, resolver, SlotTypes.BuiltIns)
+        {
+        }
+
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
         public JsonContinuationSerializer(ContinuationTypeRegistry typeRegistry)
             : this(new SlotTypeResolver(), typeRegistry)
         {
         }
 
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
         public JsonContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
             : this(DefaultSettings(Formatting.Indented, NullValueHandling.Include), resolver, typeRegistry)
         {
         }
 
-        public JsonContinuationSerializer(JsonSerializerSettings settings)
-            : this(settings, new SlotTypeResolver(), ContinuationTypeRegistry.Default)
-        {
-        }
-
-        public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver)
-            : this(settings, resolver, ContinuationTypeRegistry.Default)
-        {
-        }
-
-        /// <param name="settings">Json.NET settings. If they carry no SerializationBinder,
-        /// a <see cref="SlotSerializationBinder"/> is installed. A binder
-        /// the caller set is kept, and the caller is then responsible for what it allows.</param>
-        /// <param name="resolver">Resolves slot type names.</param>
-        /// <param name="typeRegistry">Types a slot value's <c>$type</c> may name. Types allowed
-        /// by <see cref="Validator"/> are also accepted.</param>
+        [Obsolete("ContinuationTypeRegistry is obsolete; register types on a ContinuationValidator and set Validator.")]
         public JsonContinuationSerializer(
             JsonSerializerSettings settings,
             SlotTypeResolver resolver,
             ContinuationTypeRegistry typeRegistry)
+            : this(settings, resolver, (typeRegistry ?? throw new ArgumentNullException(nameof(typeRegistry))).AllowedTypes)
+        {
+        }
+
+        /// <param name="baseTypes">Slot types allowed even when <see cref="Validator"/> is null.</param>
+        private JsonContinuationSerializer(
+            JsonSerializerSettings settings,
+            SlotTypeResolver resolver,
+            ContinuationValidator baseTypes)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            if (typeRegistry == null) throw new ArgumentNullException(nameof(typeRegistry));
             _codec = new SlotCodec(resolver);
 
             // Bound parser recursion for caller-supplied settings that leave
@@ -91,7 +101,7 @@ namespace Prim.Serialization
             // that supplies their own binder keeps it and owns that decision.
             if (_settings.SerializationBinder == null)
             {
-                _settings.SerializationBinder = new SlotSerializationBinder(resolver, typeRegistry, () => Validator);
+                _settings.SerializationBinder = new SlotSerializationBinder(resolver, baseTypes, () => Validator);
             }
         }
 
@@ -117,8 +127,7 @@ namespace Prim.Serialization
         {
             return new JsonContinuationSerializer(
                 DefaultSettings(Formatting.None, NullValueHandling.Ignore),
-                new SlotTypeResolver(),
-                ContinuationTypeRegistry.Default);
+                new SlotTypeResolver());
         }
 
         /// <inheritdoc/>

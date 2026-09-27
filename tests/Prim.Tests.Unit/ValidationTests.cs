@@ -7,6 +7,51 @@ namespace Prim.Tests.Unit
 {
     public class ValidationTests
     {
+        #region Type Allow-List
+
+        [Fact]
+        public void IsTypeAllowed_BuiltInsIncludeDateTimeOffset()
+        {
+            var validator = new ContinuationValidator();
+
+            Assert.True(validator.IsTypeAllowed(typeof(DateTimeOffset)));
+            Assert.True(validator.IsTypeAllowed(typeof(DateTimeOffset?)));
+        }
+
+        [Fact]
+        public void IsValueAllowed_NullAndAllowedScalar_Allowed()
+        {
+            var validator = new ContinuationValidator();
+
+            Assert.True(validator.IsValueAllowed(null));
+            Assert.True(validator.IsValueAllowed(42));
+            Assert.False(validator.IsValueAllowed(new TestDataClass()));
+        }
+
+        [Fact]
+        public void IsValueAllowed_Array_ChecksEachElementsRuntimeType()
+        {
+            var validator = new ContinuationValidator();
+
+            Assert.True(validator.IsValueAllowed(new object?[] { 1, "a", null, new[] { 2, 3 } }));
+            Assert.False(validator.IsValueAllowed(new object[] { 1, new TestDataClass() }));
+            Assert.False(validator.IsValueAllowed(new object[] { new object[] { new TestDataClass() } }));
+
+            validator.RegisterAllowedType(typeof(TestDataClass));
+            Assert.True(validator.IsValueAllowed(new object[] { 1, new TestDataClass() }));
+        }
+
+        [Fact]
+        public void IsValueAllowed_NestingBeyondLimit_Rejected()
+        {
+            var validator = new ContinuationValidator(new ValidationOptions { MaxArrayNestingDepth = 2 });
+
+            Assert.True(validator.IsValueAllowed(new object[] { new object[] { 1 } }));
+            Assert.False(validator.IsValueAllowed(new object[] { new object[] { new object[] { 1 } } }));
+        }
+
+        #endregion
+
         #region Basic Validation Tests
 
         [Fact]

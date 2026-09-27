@@ -208,8 +208,10 @@ namespace Prim.Tests.Unit
         [Fact]
         public void MessagePackSerializer_CustomTypeRegistry_NullThrows()
         {
+#pragma warning disable CS0618 // obsolete registry constructor still validates its argument
             Assert.Throws<ArgumentNullException>(() =>
                 new MessagePackContinuationSerializer((ContinuationTypeRegistry)null!));
+#pragma warning restore CS0618
         }
 
         #endregion
@@ -269,7 +271,9 @@ namespace Prim.Tests.Unit
 
         #endregion
 
-        #region ContinuationTypeRegistry
+        #region ContinuationTypeRegistry (obsolete wrapper over ContinuationValidator)
+
+#pragma warning disable CS0618
 
         [Fact]
         public void TypeRegistry_NullIsAllowed()
@@ -346,12 +350,15 @@ namespace Prim.Tests.Unit
         [Fact]
         public void TypeRegistry_CustomTypes_CanBeRegistered()
         {
-            var registry = new ContinuationTypeRegistry(new[] { typeof(int), typeof(System.IO.MemoryStream) });
+            var registry = new ContinuationTypeRegistry(new[] { typeof(System.IO.MemoryStream) });
 
-            Assert.True(registry.IsAllowed(typeof(int)));
             Assert.True(registry.IsAllowed(typeof(System.IO.MemoryStream)));
-            Assert.False(registry.IsAllowed(typeof(string))); // Not registered
+            // The wrapper always includes the validator's built-in types.
+            Assert.True(registry.IsAllowed(typeof(string)));
+            Assert.False(ContinuationTypeRegistry.Default.IsAllowed(typeof(System.IO.MemoryStream)));
         }
+
+#pragma warning restore CS0618
 
         #endregion
 

@@ -40,7 +40,7 @@ namespace Prim.Tests.Unit
         // complex types like Guid/DateTime and arrays round-trip — issue #40).
         // Resolution is NOT the security boundary: whether a resolved type may be
         // INSTANTIATED from a deserialized continuation is gated by the whitelist
-        // (ContinuationTypeRegistry / ContinuationValidator) before construction.
+        // (ContinuationValidator's type allow-list) before construction.
         // ----------------------------------------------------------------
         [Fact]
         public void Regression_SlotTypeResolver_DangerousTypeIsRejectedByWhitelist()
@@ -53,7 +53,7 @@ namespace Prim.Tests.Unit
 
             // ...but the whitelist that actually gates revival rejects it, so an
             // attacker continuation carrying a Process slot can never be instantiated.
-            Assert.False(ContinuationTypeRegistry.Default.IsAllowed(dangerousType));
+            Assert.False(new ContinuationValidator().IsTypeAllowed(dangerousType));
         }
 
         // ----------------------------------------------------------------
