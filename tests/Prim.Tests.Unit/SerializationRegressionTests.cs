@@ -1,46 +1,27 @@
 using System;
-using System.Reflection;
 using Xunit;
 using Prim.Core;
 using Prim.Serialization;
-using Newtonsoft.Json;
 
 namespace Prim.Tests.Unit
 {
     /// <summary>
-    /// These tests are designed to FAIL, proving that specific bugs exist
-    /// in the serialization infrastructure. Each failing assertion documents
-    /// a real defect in the current source code.
+    /// Regression tests for bugs found and fixed in the serialization layer.
+    /// Each test is named after the original bug and asserts the corrected
+    /// behaviour, so it fails if the bug comes back.
     /// </summary>
-    public class BugProof_SerializationTests
+    public class SerializationRegressionTests
     {
-        // ----------------------------------------------------------------
-        // BUG 1: JSON serializer uses TypeNameHandling.Auto without a
-        //         SerializationBinder, which is a known Newtonsoft.Json
-        //         remote-code-execution (RCE) vector.
-        // ----------------------------------------------------------------
-        [Fact]
-        public void Bug_JsonSerializer_TypeNameHandling_Without_Binder()
-        {
-            var serializer = new JsonContinuationSerializer();
-
-            // Use reflection to inspect the private _settings field
-            var settingsField = typeof(JsonContinuationSerializer)
-                .GetField("_settings", BindingFlags.NonPublic | BindingFlags.Instance);
-            var settings = (JsonSerializerSettings)settingsField.GetValue(serializer);
-
-            // BUG: TypeNameHandling.Auto is set, but no SerializationBinder restricts deserialization.
-            // This is a known RCE vector with Newtonsoft.Json.
-            Assert.NotEqual(TypeNameHandling.Auto, settings.TypeNameHandling); // FAILS
-        }
+        // Fixed bug 1 (JSON TypeNameHandling.Auto without a SerializationBinder) is
+        // covered by JsonTypeBindingTests, which checks deserialization behaviour.
 
         // ----------------------------------------------------------------
-        // BUG 5: SlotTypeResolver.GetTypeName has no case for sbyte, even
+        // Fixed bug 5: SlotTypeResolver.GetTypeName has no case for sbyte, even
         //         though RegisterBuiltInTypes registers "sbyte" in the
         //         reverse mapping. Round-tripping is asymmetric.
         // ----------------------------------------------------------------
         [Fact]
-        public void Bug_SlotTypeResolver_Asymmetric_Sbyte()
+        public void Regression_SlotTypeResolver_Asymmetric_Sbyte()
         {
             var resolver = new SlotTypeResolver();
 
@@ -49,9 +30,9 @@ namespace Prim.Tests.Unit
             var name = resolver.GetTypeName(typeof(sbyte));
             var resolved = resolver.ResolveType(name);
 
-            // BUG: GetTypeName returns assembly-qualified name for sbyte,
+            // Fixed bug: GetTypeName returns assembly-qualified name for sbyte,
             // which is NOT "sbyte", so round-tripping fails or is inconsistent.
-            Assert.Equal("sbyte", name); // FAILS - returns assembly-qualified name
+            Assert.Equal("sbyte", name);
         }
 
         // ----------------------------------------------------------------
@@ -62,7 +43,7 @@ namespace Prim.Tests.Unit
         // (ContinuationTypeRegistry / ContinuationValidator) before construction.
         // ----------------------------------------------------------------
         [Fact]
-        public void Bug_SlotTypeResolver_DangerousTypeIsRejectedByWhitelist()
+        public void Regression_SlotTypeResolver_DangerousTypeIsRejectedByWhitelist()
         {
             var resolver = new SlotTypeResolver();
 
@@ -76,12 +57,12 @@ namespace Prim.Tests.Unit
         }
 
         // ----------------------------------------------------------------
-        // BUG 7: MessagePackContinuationSerializer constructor that takes
+        // Fixed bug 7: MessagePackContinuationSerializer constructor that takes
         //         raw MessagePackSerializerOptions bypasses the
         //         RestrictedObjectResolver, defeating type restrictions.
         // ----------------------------------------------------------------
         [Fact]
-        public void Bug_MessagePack_CustomOptions_Bypasses_Restriction()
+        public void Regression_MessagePack_CustomOptions_Bypasses_Restriction()
         {
             // The constructor that takes just MessagePackSerializerOptions
             // creates the serializer without setting up the RestrictedObjectResolver.
@@ -89,7 +70,7 @@ namespace Prim.Tests.Unit
             var serializer = new MessagePackContinuationSerializer(customOptions);
 
             // The _typeRegistry is set to Default, but the _options don't use RestrictedObjectResolver.
-            // BUG: Custom options bypass the type restriction entirely.
+            // Fixed bug: Custom options bypass the type restriction entirely.
             // This can be verified by checking that the custom options don't include RestrictedObjectResolver.
 
             // Serialize and deserialize a state - the custom options path won't enforce type restrictions.

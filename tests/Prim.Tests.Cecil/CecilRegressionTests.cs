@@ -9,14 +9,14 @@ using Xunit;
 namespace Prim.Tests.Cecil
 {
     /// <summary>
-    /// Tests that demonstrate existing bugs in Prim.Cecil's MethodTransformer.
-    /// Each test is expected to FAIL, proving the bug exists.
-    /// Do NOT fix the source code to make these pass.
+    /// Regression tests for bugs found and fixed in Prim.Cecil's MethodTransformer.
+    /// Each test is named after the original bug and asserts the corrected
+    /// behaviour, so it fails if the bug comes back.
     /// </summary>
-    public class BugProof_CecilTests
+    public class CecilRegressionTests
     {
         // ---------------------------------------------------------------
-        // BUG 1: InsertBefore with .Reverse() emits restore block
+        // Fixed bug 1: InsertBefore with .Reverse() emits restore block
         //        instructions in backward order.
         //        File: MethodTransformer.cs line 647
         //
@@ -60,7 +60,7 @@ namespace Prim.Tests.Cecil
         //        So .Reverse() DOES produce reversed instructions.
         // ---------------------------------------------------------------
         [Fact]
-        public void Bug_Reverse_InsertBefore_Produces_Backward_Instructions()
+        public void Regression_Reverse_InsertBefore_Produces_Backward_Instructions()
         {
             // Simulate the pattern from MethodTransformer.cs line 647:
             //   foreach (var instr in restoreInstructions.AsEnumerable().Reverse())
@@ -111,7 +111,7 @@ namespace Prim.Tests.Cecil
         }
 
         // ---------------------------------------------------------------
-        // BUG 2: YieldPointId + 1 misalignment with 0-based switch table.
+        // Fixed bug 2: YieldPointId + 1 misalignment with 0-based switch table.
         //        File: MethodTransformer.cs lines 553-554, 636
         //
         //        The restore block computes:
@@ -130,7 +130,7 @@ namespace Prim.Tests.Cecil
         //        out of range, causing fall-through.
         // ---------------------------------------------------------------
         [Fact]
-        public void Bug_YieldPointId_Plus1_Misaligns_Switch_Table()
+        public void Regression_YieldPointId_Plus1_Misaligns_Switch_Table()
         {
             // The +1 at line 553 causes every resumption to target the
             // wrong yield point. We prove this by showing the arithmetic:
@@ -162,7 +162,7 @@ namespace Prim.Tests.Cecil
         }
 
         // ---------------------------------------------------------------
-        // BUG 3: Catch block double-loads locals onto the stack.
+        // Fixed bug 3: Catch block double-loads locals onto the stack.
         //        File: MethodTransformer.cs lines 315-342
         //
         //        Phase 1 (lines 315-323): Loads ALL original locals onto
@@ -174,7 +174,7 @@ namespace Prim.Tests.Cecil
         //        below the array on the eval stack, corrupting it.
         // ---------------------------------------------------------------
         [Fact]
-        public void Bug_CatchBlock_DoubleLoads_Locals_Corrupts_Stack()
+        public void Regression_CatchBlock_DoubleLoads_Locals_Corrupts_Stack()
         {
             // Count the stack effects of the catch block IL sequence.
             // Phase 1 loads N locals (net push = N).
@@ -200,7 +200,7 @@ namespace Prim.Tests.Cecil
         }
 
         // ---------------------------------------------------------------
-        // BUG 4: _yieldPointIdField resolved from HostFrameRecord but
+        // Fixed bug 4: _yieldPointIdField resolved from HostFrameRecord but
         //        called on SuspendException instance.
         //        File: MethodTransformer.cs lines 137-138, 352-355
         //
@@ -215,7 +215,7 @@ namespace Prim.Tests.Cecil
         //        These are different types with different method tokens.
         // ---------------------------------------------------------------
         [Fact]
-        public void Bug_YieldPointIdField_Resolved_From_Wrong_Type()
+        public void Regression_YieldPointIdField_Resolved_From_Wrong_Type()
         {
             // HostFrameRecord.YieldPointId and SuspendException.YieldPointId
             // are different properties on different types. The MethodTransformer
@@ -247,7 +247,7 @@ namespace Prim.Tests.Cecil
         }
 
         // ---------------------------------------------------------------
-        // BUG 5: Hardcoded local exclusion count is wrong.
+        // Fixed bug 5: Hardcoded local exclusion count is wrong.
         //        File: MethodTransformer.cs lines 315, 560-561
         //
         //        WrapInTryCatch (line 315) uses -3, but by that point
@@ -259,7 +259,7 @@ namespace Prim.Tests.Cecil
         //        in the "original" locals set, corrupting save/restore.
         // ---------------------------------------------------------------
         [Fact]
-        public void Bug_Hardcoded_Local_Exclusion_Count_Wrong()
+        public void Regression_Hardcoded_Local_Exclusion_Count_Wrong()
         {
             // Simulate the variable additions in Transform():
             // Original method has 2 locals (user variables)
