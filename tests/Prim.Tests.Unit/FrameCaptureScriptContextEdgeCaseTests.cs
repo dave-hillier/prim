@@ -64,7 +64,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void GetSlot_NullForValueType_ReturnsDefault()
         {
-            var slots = new object[] { null };
+            var slots = new object?[] { null };
 
             var result = FrameCapture.GetSlot<int>(slots, 0);
 
@@ -74,7 +74,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void GetSlot_NullForNullableValueType_ReturnsNull()
         {
-            var slots = new object[] { null };
+            var slots = new object?[] { null };
 
             var result = FrameCapture.GetSlot<int?>(slots, 0);
 
@@ -84,7 +84,7 @@ namespace Prim.Tests.Unit
         [Fact]
         public void GetSlot_NullForReferenceType_ReturnsNull()
         {
-            var slots = new object[] { null };
+            var slots = new object?[] { null };
 
             var result = FrameCapture.GetSlot<string>(slots, 0);
 
@@ -324,7 +324,7 @@ namespace Prim.Tests.Unit
             var context1 = new ScriptContext();
             var context2 = new ScriptContext();
 
-            ScriptContext innermost = null;
+            ScriptContext? innermost = null;
 
             context1.RunWith(() =>
             {
@@ -348,7 +348,7 @@ namespace Prim.Tests.Unit
         public void ScriptContext_ThreadLocal_IsolatedBetweenThreads()
         {
             var context1 = new ScriptContext();
-            ScriptContext threadContext = null;
+            ScriptContext? threadContext = null;
 
             context1.RunWith(() =>
             {

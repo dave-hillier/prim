@@ -1,23 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
+    <!-- This project compiles the generator source (linked below) but is not itself
+         an analyzer, so the extended analyzer API restrictions do not apply. -->
+    <EnforceExtendedAnalyzerRules>false</EnforceExtendedAnalyzerRules>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.0" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
-    <PackageReference Include="xunit" Version="2.5.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Using Include="Xunit" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,9 +26,8 @@
   <ItemGroup>
     <Compile Include="..\..\src\Prim.Roslyn\YieldPointAnalyzer.cs" Link="Analyzer\YieldPointAnalyzer.cs" />
     <Compile Include="..\..\src\Prim.Roslyn\ContinuationGenerator.cs" Link="Analyzer\ContinuationGenerator.cs" />
-    <!-- StateMachineRewriter is no longer the live generator (replay model), but its
-         direct unit tests (BugProof_RoslynTests) construct it, so link it here too. -->
-    <Compile Include="..\..\src\Prim.Roslyn\StateMachineRewriter.cs" Link="Analyzer\StateMachineRewriter.cs" />
+    <AdditionalFiles Include="..\..\src\Prim.Roslyn\AnalyzerReleases.Shipped.md" Link="Analyzer\AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="..\..\src\Prim.Roslyn\AnalyzerReleases.Unshipped.md" Link="Analyzer\AnalyzerReleases.Unshipped.md" />
   </ItemGroup>
 
 </Project>

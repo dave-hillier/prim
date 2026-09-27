@@ -289,7 +289,7 @@ namespace Prim.Tests.Unit
             var descriptor = CreateTestDescriptor(12345, "TestMethod", yieldPoints: new[] { 0 }, slotCount: 2, liveSlotCount: 2);
             validator.RegisterDescriptor(descriptor);
 
-            var frame = new HostFrameRecord(12345, 0, new object[] { null, null }, null);
+            var frame = new HostFrameRecord(12345, 0, new object?[] { null, null }, null);
             var state = new ContinuationState(frame);
 
             var result = validator.TryValidate(state);
@@ -335,7 +335,7 @@ namespace Prim.Tests.Unit
             var validator = new ContinuationValidator(options);
 
             // Create a stack deeper than allowed
-            HostFrameRecord frame = null;
+            HostFrameRecord? frame = null;
             for (int i = 0; i < 10; i++)
             {
                 frame = new HostFrameRecord(i, 0, new object[0], frame);
@@ -689,7 +689,7 @@ namespace Prim.Tests.Unit
             int[] yieldPoints,
             int slotCount = 2,
             int liveSlotCount = 2,
-            MethodSignature signature = null)
+            MethodSignature? signature = null)
         {
             var slots = new FrameSlot[slotCount];
             for (int i = 0; i < slotCount; i++)

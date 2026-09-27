@@ -31,7 +31,7 @@ namespace Prim.Serialization
         public Prim.Core.ContinuationValidator Validator { get; set; }
 
         public JsonContinuationSerializer()
-            : this(new SlotTypeResolver())
+            : this(new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
@@ -40,23 +40,18 @@ namespace Prim.Serialization
         {
         }
 
+        public JsonContinuationSerializer(ContinuationTypeRegistry typeRegistry)
+            : this(new SlotTypeResolver(), typeRegistry)
+        {
+        }
+
         public JsonContinuationSerializer(SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
-            : this(new JsonSerializerSettings
-            {
-                TypeNameHandling = TypeNameHandling.None,
-                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
-                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
-                Formatting = Formatting.Indented,
-                NullValueHandling = NullValueHandling.Include,
-                // Bound parser recursion so a deep Caller chain throws a catchable
-                // JsonReaderException instead of overflowing the stack (issue #42).
-                MaxDepth = FrameDepthGuard.MaxParserDepth
-            }, resolver, typeRegistry)
+            : this(DefaultSettings(Formatting.Indented, NullValueHandling.Include), resolver, typeRegistry)
         {
         }
 
         public JsonContinuationSerializer(JsonSerializerSettings settings)
-            : this(settings, new SlotTypeResolver())
+            : this(settings, new SlotTypeResolver(), ContinuationTypeRegistry.Default)
         {
         }
 
@@ -65,7 +60,16 @@ namespace Prim.Serialization
         {
         }
 
-        public JsonContinuationSerializer(JsonSerializerSettings settings, SlotTypeResolver resolver, ContinuationTypeRegistry typeRegistry)
+        /// <param name="settings">Json.NET settings. If they carry no SerializationBinder,
+        /// a <see cref="SlotSerializationBinder"/> is installed. A binder
+        /// the caller set is kept, and the caller is then responsible for what it allows.</param>
+        /// <param name="resolver">Resolves slot type names.</param>
+        /// <param name="typeRegistry">Types a slot value's <c>$type</c> may name. Types allowed
+        /// by <see cref="Validator"/> are also accepted.</param>
+        public JsonContinuationSerializer(
+            JsonSerializerSettings settings,
+            SlotTypeResolver resolver,
+            ContinuationTypeRegistry typeRegistry)
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
@@ -91,22 +95,30 @@ namespace Prim.Serialization
             }
         }
 
+        private static JsonSerializerSettings DefaultSettings(Formatting formatting, NullValueHandling nullValueHandling)
+        {
+            return new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.None,
+                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
+                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
+                Formatting = formatting,
+                NullValueHandling = nullValueHandling,
+                // Bound parser recursion so a deep Caller chain throws a catchable
+                // JsonReaderException instead of overflowing the stack (issue #42).
+                MaxDepth = FrameDepthGuard.MaxParserDepth
+            };
+        }
+
         /// <summary>
         /// Creates a compact serializer (no indentation).
         /// </summary>
         public static JsonContinuationSerializer Compact()
         {
-            return new JsonContinuationSerializer(new JsonSerializerSettings
-            {
-                TypeNameHandling = TypeNameHandling.None,
-                PreserveReferencesHandling = PreserveReferencesHandling.Objects,
-                ReferenceLoopHandling = ReferenceLoopHandling.Serialize,
-                Formatting = Formatting.None,
-                NullValueHandling = NullValueHandling.Ignore,
-                // Bound parser recursion so a deep Caller chain throws a catchable
-                // JsonReaderException instead of overflowing the stack (issue #42).
-                MaxDepth = FrameDepthGuard.MaxParserDepth
-            });
+            return new JsonContinuationSerializer(
+                DefaultSettings(Formatting.None, NullValueHandling.Ignore),
+                new SlotTypeResolver(),
+                ContinuationTypeRegistry.Default);
         }
 
         /// <inheritdoc/>

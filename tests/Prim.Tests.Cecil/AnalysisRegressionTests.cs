@@ -8,11 +8,11 @@ using Xunit;
 namespace Prim.Tests.Cecil
 {
     /// <summary>
-    /// Tests that demonstrate existing bugs in Prim.Analysis.
-    /// These tests are expected to FAIL, proving the bugs exist.
-    /// Do NOT fix the source code to make these pass.
+    /// Regression tests for bugs found and fixed in Prim.Analysis.
+    /// Each test is named after the original bug and asserts the corrected
+    /// behaviour, so it fails if the bug comes back.
     /// </summary>
-    public class BugProof_AnalysisTests
+    public class AnalysisRegressionTests
     {
         private static (AssemblyDefinition, MethodDefinition) CreateTestMethod(bool hasReturnValue = false)
         {
@@ -37,14 +37,14 @@ namespace Prim.Tests.Cecil
         }
 
         /// <summary>
-        /// BUG: ControlFlowGraph.IsBranch (lines 242-259) does not include Throw.
+        /// Fixed bug: ControlFlowGraph.IsBranch (lines 242-259) does not include Throw.
         /// When a method contains "throw; nop; ret", the throw should terminate its
         /// basic block and nop should start a new block. Because Throw is missing from
         /// IsBranch, FindLeaders never marks the instruction after throw as a leader,
         /// so all instructions end up in a single block.
         /// </summary>
         [Fact]
-        public void Bug_CFG_IsBranch_Missing_Throw_As_Terminator()
+        public void Regression_CFG_IsBranch_Missing_Throw_As_Terminator()
         {
             var (assembly, method) = CreateTestMethod();
             var il = method.Body.GetILProcessor();
@@ -60,7 +60,7 @@ namespace Prim.Tests.Cecil
             var cfg = ControlFlowGraph.Build(method);
 
             // The throw should terminate a block, and nop should start a new block.
-            // BUG: throw is not in IsBranch, so no split happens after it.
+            // Fixed bug: throw is not in IsBranch, so no split happens after it.
             // Expected: at least 2 blocks (before+including throw, after throw).
             // Actual: only 1 block containing all instructions.
             Assert.True(cfg.Blocks.Count >= 2,
@@ -68,7 +68,7 @@ namespace Prim.Tests.Cecil
         }
 
         /// <summary>
-        /// BUG: StackSimulator.GetVarPop (lines 148-161) returns 0 for the ret
+        /// Fixed bug: StackSimulator.GetVarPop (lines 148-161) returns 0 for the ret
         /// instruction. The ret opcode has Varpop stack behavior and should pop 1 item
         /// (the return value) for non-void methods, but GetVarPop only handles
         /// MethodReference operands and falls through to "return 0" for ret.
@@ -78,7 +78,7 @@ namespace Prim.Tests.Cecil
         /// Dead code after ret will see depth 1 instead of 0.
         /// </summary>
         [Fact]
-        public void Bug_StackSimulator_Ret_Pops_Zero_For_NonVoid()
+        public void Regression_StackSimulator_Ret_Pops_Zero_For_NonVoid()
         {
             var (assembly, method) = CreateTestMethod(hasReturnValue: true);
             var il = method.Body.GetILProcessor();
@@ -94,7 +94,7 @@ namespace Prim.Tests.Cecil
             // The simulator processes instructions linearly in a forward pass.
             // After ldc.i4 pushes 1 item (depth=1), ret should pop 1 (the return value).
             // So at the nop (dead code), the recorded stack depth should be 0.
-            // BUG: GetVarPop returns 0 for ret, so depth stays at 1 after ret executes.
+            // Fixed bug: GetVarPop returns 0 for ret, so depth stays at 1 after ret executes.
             var nopInstruction = method.Body.Instructions[2];
             var stateAtDeadCode = sim.GetStateAt(nopInstruction.Offset);
 
@@ -102,7 +102,7 @@ namespace Prim.Tests.Cecil
         }
 
         /// <summary>
-        /// BUG: YieldPointIdentifier.IsExternalCall (lines 187-190) compares
+        /// Fixed bug: YieldPointIdentifier.IsExternalCall (lines 187-190) compares
         /// method.DeclaringType.Scope.Name with _method.Module.Assembly.Name.Name.
         /// For programmatically created assemblies, Scope.Name is the module name
         /// (e.g., "TestModule") while Assembly.Name.Name is the assembly name
@@ -110,7 +110,7 @@ namespace Prim.Tests.Cecil
         /// the same assembly are incorrectly classified as external.
         /// </summary>
         [Fact]
-        public void Bug_YieldPointIdentifier_SameAssembly_Name_Mismatch()
+        public void Regression_YieldPointIdentifier_SameAssembly_Name_Mismatch()
         {
             var (assembly, method) = CreateTestMethod();
             var module = assembly.MainModule;
@@ -140,7 +140,7 @@ namespace Prim.Tests.Cecil
         }
 
         /// <summary>
-        /// BUG: ControlFlowGraph.IdentifyBackEdges (lines 208-239) performs DFS
+        /// Fixed bug: ControlFlowGraph.IdentifyBackEdges (lines 208-239) performs DFS
         /// only starting from EntryBlock. Exception handler blocks that are not
         /// reachable from the entry block via normal control flow edges are never
         /// visited, so loops within catch/finally handlers are not detected.
@@ -150,7 +150,7 @@ namespace Prim.Tests.Cecil
         /// from the try block. This means the DFS from EntryBlock cannot reach them.
         /// </summary>
         [Fact]
-        public void Bug_CFG_BackEdges_Not_Found_In_Exception_Handlers()
+        public void Regression_CFG_BackEdges_Not_Found_In_Exception_Handlers()
         {
             var (assembly, method) = CreateTestMethod();
             var module = assembly.MainModule;

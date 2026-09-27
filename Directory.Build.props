@@ -1,0 +1,6 @@
+<Project>
+  <!-- Settings shared by every project. src/ and tests/ add their own on top. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+</Project>

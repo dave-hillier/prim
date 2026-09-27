@@ -8,8 +8,7 @@ namespace Prim.Tests.Roslyn
     /// Sample class with methods marked [Continuable] for testing the source generator.
     /// Tests various control flow constructs.
     ///
-    /// This file is the UNION of both lines of work: the replay-model (v1) samples
-    /// and main's StateMachineRewriter samples. Methods that contain a yield point
+    /// Methods that contain a yield point
     /// inside a finally/lock (a PRIM003 ERROR under the replay model) intentionally
     /// omit the [Continuable] attribute so the build stays green while the plain
     /// method remains available to the tests.
@@ -634,7 +633,7 @@ namespace Prim.Tests.Roslyn
         /// Switch with pattern matching.
         /// </summary>
         [Continuable]
-        public string PatternMatchingSwitch(object value)
+        public string PatternMatchingSwitch(object? value)
         {
             string result = "";
             switch (value)
@@ -813,8 +812,11 @@ namespace Prim.Tests.Roslyn
         /// <summary>
         /// Expression-bodied method (simple case).
         /// </summary>
+        // Unsupported on purpose: the generator reports PRIM002 and skips it.
+#pragma warning disable PRIM002
         [Continuable]
         public int ExpressionBodied(int x) => x * 2;
+#pragma warning restore PRIM002
 
         #endregion
     }

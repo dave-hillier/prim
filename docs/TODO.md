@@ -2,35 +2,60 @@
 
 ## Current State
 
-The framework is architecturally complete. Runtime, serialization, analysis, and security components are working and all tests pass (256 total).
+The runtime (`Prim.Core`, `Prim.Runtime`) and serialization are working. Both
+automatic transformers are experimental: the Roslyn source generator works end to
+end for supported method shapes, and the Cecil IL rewriter produces verifiable IL
+but is not yet hooked into a build.
+
+`dotnet test Prim.sln` passes, with one test skipped (MessagePack reference
+identity, below).
 
 ## What's Left
 
-### Roslyn Source Generator (Low Priority)
+### Roslyn Source Generator
 
-The generator handles most common cases. Remaining edge cases:
+The generator uses a replay model: on resume the body re-runs from the top over
+restored locals, so side effects before a yield point repeat. Remaining gaps:
 
-- Complex control flow (switch expressions, pattern matching)
+- Continuable calls inside an `if`/loop condition or a `switch` do not get their
+  own yield point; they rely on the whole statement being replayed.
+- Unsupported shapes (reported as `PRIM002`): async, iterator, generic and
+  expression-bodied methods, and methods on generic types.
+- There is no explicit yield statement: suspension happens only at loop headers
+  and continuable calls. Adding one needs replay-aware emission so that a resumed
+  method does not suspend again at the same point.
 
 Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs)
 
+### Cecil IL Rewriter
+
+- No MSBuild task or CLI; `AssemblyRewriter.Transform` must be called from code.
+- Yield points inside `try`/`catch`/`finally` regions are skipped.
+- Methods with byref/pointer locals or `ref`/`out` parameters are skipped
+  (reported in `SkippedMethods`).
+
+Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
+
+### Serialization
+
+- MessagePack does not preserve reference identity between slots (the skipped test
+  in `SerializationTests`). JSON does.
+
 ## What's Done
 
-- Core types (HostFrameRecord, ContinuationState, SuspendException)
-- Runtime (ContinuationRunner, ScriptContext)
-- Budget-based preemption (ScriptContext.HandleYieldPointWithBudget / RequestYield)
-- Serialization (JSON and MessagePack with object graph tracking)
-- Analysis (CFG construction, stack simulation, yield point identification)
-- Cecil IL transformation with E2E tests
-- Roslyn source generator with:
-  - Loop transformation (while, for, foreach, do-while)
-  - Try-catch-finally blocks (including nested and finally with yield points)
-  - Proper SuspendException filtering in catch clauses
-  - Nested continuable method calls (calls between [Continuable] methods are transformed)
-- Instruction counting for preemptive scheduling (budget-based yield enforcement)
-- Security validation for deserialized state (method tokens, yield points, slot types, type whitelist)
-- Direct resume without entry point (EntryPointRegistry maps method tokens to delegates)
-- Performance benchmarks (transform overhead, suspension/resume, serialization, validation)
+- Core types (`HostFrameRecord`, `ContinuationState`, `SuspendException`, `ContinuationResult`, `Continuation<T>`)
+- Runtime (`ContinuationRunner`, `ScriptContext`, `FrameCapture`)
+- Budget-based preemption (`ScriptContext.HandleYieldPointWithBudget`, `ResetBudget`)
+- Direct resume without re-supplying the entry point (`EntryPointRegistry`)
+- Serialization: JSON (with shared-reference preservation) and MessagePack, typed slot envelopes, parser depth limits
+- Validation of deserialized state (`ContinuationValidator`: method tokens, yield point IDs, slot counts and types, stack depth, type allow-list)
+- JSON `$type` checked against an allow-list before any object is constructed (`SlotSerializationBinder`)
 - Stable hashing for method tokens
-- Working samples (Generator, MigrationDemo)
-- Comprehensive test coverage (256 tests passing)
+- IL analysis (CFG construction, stack simulation, yield point identification)
+- Cecil rewriter: back-edge yield checks, optional instruction counting, resume at calls to other transformed methods, output checked with `ilverify`
+- Roslyn generator (replay model):
+  - Loops (while, for, foreach, do-while)
+  - Yield points inside `try` and `catch` blocks, with `SuspendException` filtered out of user catch clauses
+  - Nested calls between `[Continuable]` methods
+  - Diagnostics `PRIM001`–`PRIM003` for unsupported members, shapes and regions
+- Samples (`Generator`, `MigrationDemo`) and BenchmarkDotNet benchmarks

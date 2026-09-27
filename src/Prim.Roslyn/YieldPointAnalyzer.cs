@@ -1,3 +1,7 @@
+// Written without nullable annotations. Prim.Tests.Roslyn compiles this file
+// directly with nullable enabled, so state the context explicitly.
+#nullable disable
+
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -16,7 +20,7 @@ namespace Prim.Roslyn
         public YieldPointKind Kind { get; set; }
 
         /// <summary>
-        /// Human-readable description (used by main's StateMachineRewriter tests).
+        /// Human-readable description of the yield point.
         /// </summary>
         public string Description { get; set; }
 
@@ -107,29 +111,15 @@ namespace Prim.Roslyn
         LoopBackEdge,
 
         /// <summary>
-        /// Method exit point.
-        /// </summary>
-        MethodExit,
-
-        /// <summary>
-        /// Explicit yield call.
-        /// </summary>
-        ExplicitYield,
-
-        /// <summary>
         /// A call to another continuable method that may yield.
         /// </summary>
         NestedMethodCall,
 
         /// <summary>
-        /// Call to another continuable method (main's StateMachineRewriter model).
+        /// Call to an already-suffixed *_Continuable method, reported in standalone mode
+        /// (no continuable name set supplied).
         /// </summary>
-        ContinuableCall,
-
-        /// <summary>
-        /// Await expression (for async methods that need continuation support).
-        /// </summary>
-        AwaitExpression
+        ContinuableCall
     }
 
     /// <summary>
@@ -144,7 +134,6 @@ namespace Prim.Roslyn
     ///
     /// A yield point is emitted for:
     ///   - each loop header (while / for / foreach / do)  -> LoopBackEdge
-    ///   - each explicit Yield() / CheckYield() call       -> ExplicitYield
     ///   - each statement that contains a call to a known continuable method
     ///     (statement granularity, including sub-expression calls) -> NestedMethodCall
     ///
@@ -333,8 +322,7 @@ namespace Prim.Roslyn
         }
 
         /// <summary>
-        /// Finds every yield point (loop header, explicit Yield()/CheckYield(), or
-        /// continuable call) that is lexically inside a context the suspend/replay model
+        /// Finds every yield point (loop header or continuable call) that is lexically inside a context the suspend/replay model
         /// cannot honour: a <c>finally</c> block, a <c>lock</c> statement body, or a
         /// <c>catch</c> exception filter (<c>when (...)</c>). Per whitepaper §10.2 these
         /// are hard errors — suspending out of a finally/lock/filter would abandon a
@@ -380,18 +368,6 @@ namespace Prim.Roslyn
         private bool IsYieldingInvocation(InvocationExpressionSyntax invocation)
         {
             var simpleName = GetSimpleMethodName(invocation);
-            var fullName = invocation.Expression switch
-            {
-                IdentifierNameSyntax id => id.Identifier.Text,
-                MemberAccessExpressionSyntax ma => ma.ToString(),
-                _ => ""
-            };
-
-            if (fullName == "Yield" || fullName == "CheckYield" ||
-                fullName.EndsWith(".Yield") || fullName.EndsWith(".CheckYield"))
-            {
-                return true;
-            }
 
             if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleName))
                 return true;
@@ -579,27 +555,19 @@ namespace Prim.Roslyn
                 var methodName = GetMethodName(node);
                 var simpleMethodName = GetSimpleMethodName(node);
 
-                // Check if this is a call to Suspend.Yield or similar
-                if (methodName == "Yield" || methodName == "CheckYield" ||
-                    methodName.EndsWith(".Yield") || methodName.EndsWith(".CheckYield"))
-                {
-                    var explicitPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.ExplicitYield);
-                    explicitPoint.Description = $"Explicit yield: {methodName}";
-                }
                 // Generator mode (v1 replay model): the emitter supplies the set of
                 // continuable method names by their ORIGINAL name (it rewrites them to
                 // *_Continuable afterwards), so when the set is present we match on it
                 // and emit a NestedMethodCall the replay emitter understands.
-                else if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName))
+                if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName))
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.NestedMethodCall);
                     yieldPoint.CalledMethodName = simpleMethodName;
                     yieldPoint.InvocationSyntax = node;
                     yieldPoint.Description = $"Continuable call: {methodName}";
                 }
-                // Standalone analyzer mode (main's StateMachineRewriter tests): no name
-                // set supplied, so recognise the already-suffixed *_Continuable form and
-                // report it as main's ContinuableCall kind.
+                // Standalone analyzer mode: no name set supplied, so recognise the
+                // already-suffixed *_Continuable form and report it as ContinuableCall.
                 else if (_continuableMethodNames == null && methodName.EndsWith("_Continuable"))
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.ContinuableCall);
@@ -609,14 +577,6 @@ namespace Prim.Roslyn
                 }
 
                 base.VisitInvocationExpression(node);
-            }
-
-            public override void VisitAwaitExpression(AwaitExpressionSyntax node)
-            {
-                // Await expressions are potential yield points in async-continuable methods
-                var awaitPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.AwaitExpression);
-                awaitPoint.Description = $"Await: {node.Expression}";
-                base.VisitAwaitExpression(node);
             }
 
             public override void VisitSwitchStatement(SwitchStatementSyntax node)
@@ -679,15 +639,11 @@ namespace Prim.Roslyn
             if (yieldPoints.Count == 0) return "No yield points";
 
             var loopCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.LoopBackEdge);
-            var explicitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ExplicitYield);
             var callCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.ContinuableCall);
-            var awaitCount = yieldPoints.Count(yp => yp.Kind == YieldPointKind.AwaitExpression);
 
             var parts = new List<string>();
             if (loopCount > 0) parts.Add($"{loopCount} loop(s)");
-            if (explicitCount > 0) parts.Add($"{explicitCount} explicit yield(s)");
             if (callCount > 0) parts.Add($"{callCount} continuable call(s)");
-            if (awaitCount > 0) parts.Add($"{awaitCount} await(s)");
 
             return string.Join(", ", parts);
         }

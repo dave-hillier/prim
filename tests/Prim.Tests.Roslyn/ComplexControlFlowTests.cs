@@ -138,7 +138,7 @@ namespace Prim.Tests.Roslyn
         [InlineData(-2, "NN")]
         [InlineData("abc", "ABC")]
         [InlineData(null, "NULL")]
-        public void PatternMatchingSwitch_ComputesCorrectResult(object value, string expected)
+        public void PatternMatchingSwitch_ComputesCorrectResult(object? value, string expected)
         {
             var instance = new SampleContinuableClass();
             var result = instance.PatternMatchingSwitch(value);

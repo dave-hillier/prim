@@ -99,6 +99,20 @@ namespace Prim.Tests.Unit
         }
 
         [Fact]
+        public void Json_RegistryAllowedUserType_RoundTrips()
+        {
+            var serializer = new JsonContinuationSerializer(
+                ContinuationTypeRegistry.Default.With(typeof(AllowedSlotPayload)));
+
+            var state = new ContinuationState(new HostFrameRecord(1, 0,
+                new object[] { new AllowedSlotPayload { Number = 5 } }, null));
+
+            var restored = serializer.DeserializeFromString(serializer.SerializeToString(state));
+
+            Assert.Equal(5, Assert.IsType<AllowedSlotPayload>(restored.StackHead.Slots[0]).Number);
+        }
+
+        [Fact]
         public void Json_ResolverRegisteredUserType_RoundTrips()
         {
             var resolver = new SlotTypeResolver();

@@ -99,7 +99,7 @@ namespace Prim.Tests.Roslyn
         public void ScriptContext_Current_ReturnsContextDuringRun()
         {
             var runner = new ContinuationRunner();
-            ScriptContext capturedContext = null;
+            ScriptContext? capturedContext = null;
 
             runner.Run<int>(() =>
             {
