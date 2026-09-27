@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <!-- Compiles the C# fixtures in TryBlockYieldTests, so the rewriter sees the
+         exception-handler layouts the C# compiler really emits. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.8.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Prim.Core\Prim.Core.csproj" />
     <ProjectReference Include="..\..\src\Prim.Runtime\Prim.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Prim.Analysis\Prim.Analysis.csproj" />

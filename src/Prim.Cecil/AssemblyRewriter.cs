@@ -24,6 +24,17 @@ namespace Prim.Cecil
         public List<(string Method, string Reason)> SkippedMethods { get; } =
             new List<(string, string)>();
 
+        /// <summary>
+        /// Candidate yield points that were not placed. A yield point inside a user
+        /// <c>try</c> block is supported; one inside a catch handler, a <c>finally</c> or
+        /// <c>fault</c> block, an exception filter or a <c>lock</c> body is skipped, because
+        /// there is no way to resume there. Each entry is (method full name, description
+        /// with the original IL offset and the reason). The rest of the method is still
+        /// transformed.
+        /// </summary>
+        public List<(string Method, string Reason)> SkippedYieldPoints { get; } =
+            new List<(string, string)>();
+
         public AssemblyRewriter() : this(RewriterOptions.Default)
         {
         }
@@ -72,6 +83,10 @@ namespace Prim.Cecil
             {
                 var transformer = new MethodTransformer(method, _options, IsContinuableCall);
                 transformer.Transform();
+                foreach (var skipped in transformer.SkippedYieldPoints)
+                {
+                    SkippedYieldPoints.Add((method.FullName, skipped));
+                }
                 if (!transformer.WasTransformed && transformer.SkipReason != null)
                 {
                     SkippedMethods.Add((method.FullName, transformer.SkipReason));
