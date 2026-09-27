@@ -21,6 +21,15 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore Prim.sln
 
+      # dotnet list always exits 0, so fail on its report text instead.
+      - name: Check for vulnerable packages
+        run: |
+          dotnet list Prim.sln package --vulnerable --include-transitive | tee vulnerable-packages.txt
+          if grep -q "has the following vulnerable packages" vulnerable-packages.txt; then
+            echo "::error::Vulnerable NuGet packages found (see the listing above)"
+            exit 1
+          fi
+
       - name: Build
         run: dotnet build Prim.sln --no-restore --configuration Release -p:TreatWarningsAsErrors=true
 
