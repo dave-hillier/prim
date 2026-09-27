@@ -40,9 +40,6 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 
 - MessagePack does not preserve reference identity between slots (the skipped test
   in `SerializationTests`). JSON does.
-- JSON turns a `DateTimeOffset` slot into a `DateTime` and loses its offset:
-  Json.NET parses the date string into a `DateTime` before `SlotCodec.Coerce` sees
-  it, and `Coerce` only converts strings to `DateTimeOffset`.
 
 ## What's Done
 
