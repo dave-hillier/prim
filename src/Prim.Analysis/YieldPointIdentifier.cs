@@ -37,6 +37,32 @@ namespace Prim.Analysis
     }
 
     /// <summary>
+    /// A candidate yield point that was not placed, and why.
+    /// </summary>
+    public sealed class SkippedYieldPoint
+    {
+        /// <summary>
+        /// The instruction the yield point would have guarded.
+        /// </summary>
+        public Instruction Instruction { get; set; }
+
+        /// <summary>
+        /// The kind of yield point that was skipped.
+        /// </summary>
+        public ILYieldPointKind Kind { get; set; }
+
+        /// <summary>
+        /// Why the yield point was skipped.
+        /// </summary>
+        public string Reason { get; set; }
+
+        public override string ToString()
+        {
+            return $"IL_{Instruction.Offset:X4} ({Kind}): {Reason}";
+        }
+    }
+
+    /// <summary>
     /// Kind of IL yield point.
     /// </summary>
     public enum ILYieldPointKind
@@ -119,6 +145,7 @@ namespace Prim.Analysis
         private readonly ControlFlowGraph _cfg;
         private readonly StackSimulator _stackSim;
         private readonly YieldPointOptions _options;
+        private readonly List<SkippedYieldPoint> _skipped = new List<SkippedYieldPoint>();
 
         public YieldPointIdentifier(MethodDefinition method)
             : this(method, YieldPointOptions.Default)
@@ -139,6 +166,7 @@ namespace Prim.Analysis
         /// </summary>
         public List<ILYieldPoint> FindYieldPoints()
         {
+            _skipped.Clear();
             var yieldPoints = new List<ILYieldPoint>();
             var nextId = 0;
 
@@ -150,8 +178,9 @@ namespace Prim.Analysis
                     // The yield point is at the back-edge source (the branch instruction)
                     var lastInstruction = from.Instructions[from.Instructions.Count - 1];
 
-                    // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
-                    if (IsInExceptionHandlerRegion(lastInstruction.Offset))
+                    // Yield points inside try blocks are placed; those inside handlers,
+                    // filters and lock bodies are skipped (whitepaper §10.2).
+                    if (Skip(lastInstruction, ILYieldPointKind.BackwardBranch))
                         continue;
 
                     yieldPoints.Add(new ILYieldPoint
@@ -185,8 +214,9 @@ namespace Prim.Analysis
                     else
                         continue;
 
-                    // Skip yield points inside try/handler/filter/finally regions (whitepaper §10.2)
-                    if (IsInExceptionHandlerRegion(instruction.Offset))
+                    // Yield points inside try blocks are placed; those inside handlers,
+                    // filters and lock bodies are skipped (whitepaper §10.2).
+                    if (Skip(instruction, kind))
                         continue;
 
                     yieldPoints.Add(new ILYieldPoint
@@ -213,36 +243,82 @@ namespace Prim.Analysis
         public StackSimulator GetStackSimulator() => _stackSim;
 
         /// <summary>
-        /// Determines whether the given IL offset falls within any exception-handler
-        /// region (try block, catch/handler body, filter, or finally). Yield points
-        /// must not be inserted inside such regions (whitepaper §10.2).
+        /// Candidate yield points that the last <see cref="FindYieldPoints"/> call did not
+        /// place, with the reason for each.
         /// </summary>
-        private bool IsInExceptionHandlerRegion(int offset)
+        public IReadOnlyList<SkippedYieldPoint> SkippedYieldPoints => _skipped;
+
+        private bool Skip(Instruction instruction, ILYieldPointKind kind)
+        {
+            var reason = GetSkipReason(instruction.Offset);
+            if (reason == null) return false;
+
+            _skipped.Add(new SkippedYieldPoint { Instruction = instruction, Kind = kind, Reason = reason });
+            return true;
+        }
+
+        /// <summary>
+        /// Returns why a yield point at the given IL offset cannot be placed, or null if it
+        /// can. A yield point may sit inside a <c>try</c> block: the transformer re-enters
+        /// the block at its first instruction on resume and keeps the method's own handlers
+        /// from observing the suspension. It may not sit inside a catch handler, a
+        /// <c>finally</c>/<c>fault</c> block or a filter, because the runtime is the only
+        /// way into those, so there is nowhere to resume (whitepaper §10.2). Nor may it sit
+        /// inside a <c>lock</c> body: the monitor belongs to the suspending thread and
+        /// cannot be carried across a suspension.
+        /// </summary>
+        private string GetSkipReason(int offset)
         {
             foreach (var handler in _method.Body.ExceptionHandlers)
             {
-                // Try block: [TryStart, TryEnd)
-                if (handler.TryStart != null && handler.TryEnd != null &&
-                    offset >= handler.TryStart.Offset && offset < handler.TryEnd.Offset)
+                // Handler body (catch/finally/fault): [HandlerStart, HandlerEnd); a null
+                // HandlerEnd means the handler runs to the end of the method.
+                if (handler.HandlerStart != null && offset >= handler.HandlerStart.Offset &&
+                    (handler.HandlerEnd == null || offset < handler.HandlerEnd.Offset))
                 {
-                    return true;
-                }
-
-                // Handler body (catch/finally/fault): [HandlerStart, HandlerEnd)
-                if (handler.HandlerStart != null && handler.HandlerEnd != null &&
-                    offset >= handler.HandlerStart.Offset && offset < handler.HandlerEnd.Offset)
-                {
-                    return true;
+                    switch (handler.HandlerType)
+                    {
+                        case ExceptionHandlerType.Finally: return "inside a finally block";
+                        case ExceptionHandlerType.Fault: return "inside a fault block";
+                        default: return "inside a catch handler";
+                    }
                 }
 
                 // Filter region: [FilterStart, HandlerStart)
                 if (handler.FilterStart != null && handler.HandlerStart != null &&
                     offset >= handler.FilterStart.Offset && offset < handler.HandlerStart.Offset)
                 {
-                    return true;
+                    return "inside an exception filter";
+                }
+
+                // Try block of a lock statement: [TryStart, TryEnd) protected by a finally
+                // that calls Monitor.Exit.
+                if (handler.HandlerType == ExceptionHandlerType.Finally &&
+                    handler.TryStart != null && handler.TryEnd != null &&
+                    offset >= handler.TryStart.Offset && offset < handler.TryEnd.Offset &&
+                    FinallyExitsMonitor(handler))
+                {
+                    return "inside a lock statement (a try/finally that calls Monitor.Exit)";
                 }
             }
 
+            return null;
+        }
+
+        private static bool FinallyExitsMonitor(ExceptionHandler handler)
+        {
+            for (var instruction = handler.HandlerStart;
+                 instruction != null && instruction != handler.HandlerEnd;
+                 instruction = instruction.Next)
+            {
+                if ((instruction.OpCode.Code == Code.Call || instruction.OpCode.Code == Code.Callvirt) &&
+                    instruction.Operand is MethodReference called &&
+                    called.Name == "Exit" &&
+                    called.DeclaringType.FullName == "System.Threading.Monitor")
+                {
+                    return true;
+                }
+            }
             return false;
         }
 

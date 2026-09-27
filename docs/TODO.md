@@ -30,7 +30,17 @@ Location: [ContinuationGenerator.cs](../src/Prim.Roslyn/ContinuationGenerator.cs
 ### Cecil IL Rewriter
 
 - No MSBuild task or CLI; `AssemblyRewriter.Transform` must be called from code.
-- Yield points inside `try`/`catch`/`finally` regions are skipped.
+- Yield points inside catch handlers, `finally`/`fault` blocks, exception filters
+  and `lock` bodies are skipped (reported in `SkippedYieldPoints`). Only the
+  runtime can enter a handler, so there is nowhere to resume. Yield points inside
+  `try` blocks are supported.
+- A call to another transformed method inside a catch handler or `finally` gets
+  no resume point. If the callee suspends there, the caller's frame records its
+  last yield point instead, so the resume goes to the wrong place.
+- Suspending inside a `try`/`finally` defers the `finally` until the method
+  really leaves the block after resuming. That keeps a `using` resource alive (and
+  in the captured state) across the suspension, so it must survive serialization
+  if the state is serialized.
 - Methods with byref/pointer locals or `ref`/`out` parameters are skipped
   (reported in `SkippedMethods`).
 
@@ -53,6 +63,7 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 - Stable hashing for method tokens
 - IL analysis (CFG construction, stack simulation, yield point identification)
 - Cecil rewriter: back-edge yield checks, optional instruction counting, resume at calls to other transformed methods, output checked with `ilverify`
+  - Yield points inside `try` blocks, including nested ones: a nested dispatch at each block's first instruction, `SuspendException` filtered out of user catch clauses and filters, and `finally` blocks skipped while suspending
 - Roslyn generator (replay model):
   - Loops (while, for, foreach, do-while)
   - Yield points inside `try` and `catch` blocks, with `SuspendException` filtered out of user catch clauses

@@ -34,7 +34,7 @@ For the full technical details, design rationale, and comparison with related sy
 | `Prim.Core`, `Prim.Runtime` | Working. Run, suspend, resume, budget-based preemption, direct resume via `EntryPointRegistry`. |
 | `Prim.Serialization` | Working. JSON preserves shared references between slots; MessagePack preserves slot types but not shared references. See [Security](#security) before loading untrusted state. |
 | `Prim.Roslyn` source generator | Experimental, works end to end for supported method shapes. Uses a *replay* model (see below). |
-| `Prim.Cecil` IL rewriter | Experimental. Output passes `ilverify` in tests; no MSBuild integration yet, and yield points inside `try`/`catch`/`finally` are not supported. |
+| `Prim.Cecil` IL rewriter | Experimental. Output passes `ilverify` in tests; no MSBuild integration yet. Yield points inside `try` blocks are supported; those inside `catch`, `finally`, filters and `lock` bodies are skipped. |
 
 ## Project Structure
 
@@ -183,7 +183,9 @@ var resumed = runner.Resume(new Continuation<int>(state));
 
 ### IL Rewriting (`Prim.Cecil`, experimental)
 
-`AssemblyRewriter` rewrites a compiled assembly: `new AssemblyRewriter(options).Transform(inputPath, outputPath)`. It adds yield checks at loop back-edges (with optional instruction counting via `HandleYieldPointWithBudget`) and resume points at calls to other transformed methods. It does not use replay: it spills the evaluation stack and jumps back to the yield point. It is not yet hooked into the build, it skips yield points inside protected regions, and it skips methods with byref/pointer locals or `ref`/`out` parameters (listed in `SkippedMethods`).
+`AssemblyRewriter` rewrites a compiled assembly: `new AssemblyRewriter(options).Transform(inputPath, outputPath)`. It adds yield checks at loop back-edges (with optional instruction counting via `HandleYieldPointWithBudget`) and resume points at calls to other transformed methods. It does not use replay: it spills the evaluation stack and jumps back to the yield point. It is not yet hooked into the build, and it skips methods with byref/pointer locals or `ref`/`out` parameters (listed in `SkippedMethods`).
+
+Yield points inside `try` blocks, including nested ones, are supported. On resume the method enters each enclosing `try` block at its first instruction, where a nested dispatch jumps on to the next block or to the yield point. The method's own handlers do not see a suspension: a `catch` that could catch `SuspendException` (`catch (Exception)`, a bare `catch`) becomes a filter that rejects it, user `when` filters reject it before running, and a `finally` does not run while the method suspends. The `finally` runs once, when the method really leaves the `try` block after resuming, as if it had never suspended. (The source generator differs: under replay its `finally` runs on every suspension.) Yield points inside a `catch` handler, a `finally` block, a filter or a `lock` body are skipped and listed in `SkippedYieldPoints`, because only the runtime can enter a handler, so there is nowhere to resume.
 
 ## Core Concepts
 
