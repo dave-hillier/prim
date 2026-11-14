@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace Prim.Serialization
@@ -9,14 +10,16 @@ namespace Prim.Serialization
     /// </summary>
     public sealed class SlotTypeResolver
     {
-        private readonly Dictionary<string, Type> _typeCache;
-        private readonly List<Func<string, Type>> _customResolvers;
+        private readonly ConcurrentDictionary<string, Type> _typeCache;
+        // Copy-on-write: readers take a snapshot, AddResolver swaps under _resolverLock.
+        private readonly object _resolverLock = new object();
+        private volatile Func<string, Type>[] _customResolvers;
         private readonly HashSet<Type> _builtInTypes;
 
         public SlotTypeResolver()
         {
-            _typeCache = new Dictionary<string, Type>();
-            _customResolvers = new List<Func<string, Type>>();
+            _typeCache = new ConcurrentDictionary<string, Type>();
+            _customResolvers = new Func<string, Type>[0];
             RegisterBuiltInTypes();
             _builtInTypes = new HashSet<Type>(_typeCache.Values);
         }
@@ -27,7 +30,14 @@ namespace Prim.Serialization
         public void AddResolver(Func<string, Type> resolver)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            _customResolvers.Add(resolver);
+            lock (_resolverLock)
+            {
+                var current = _customResolvers;
+                var next = new Func<string, Type>[current.Length + 1];
+                Array.Copy(current, next, current.Length);
+                next[current.Length] = resolver;
+                _customResolvers = next;
+            }
         }
 
         /// <summary>

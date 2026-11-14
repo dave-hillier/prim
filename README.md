@@ -199,7 +199,7 @@ Thread-local context. `RequestYield()` sets the yield flag; `HandleYieldPoint()`
 Unwinds the stack when suspending. Each catch block captures its frame and re-throws, building the frame chain.
 
 ### ContinuationRunner
-An instance class. `Run` executes a computation and returns `Completed` or `Suspended`. `Resume(state, resumeValue, entryPoint)` restarts from a state. `Resume(continuation)` looks up the entry point in `EntryPoints`. If `Validator` is set, state is validated before every resume.
+An instance class. `Run` executes a computation and returns `Completed` or `Suspended`. `Resume(state, resumeValue, entryPoint)` restarts from a state. `Resume(continuation)` looks up the entry point in `EntryPoints`. If `Validator` is set, state is validated before every resume. Set `InstructionBudget` (nullable `int`) to choose the budget of the contexts the runner creates in `Run` and `Resume`; left null, the default budget applies.
 
 ## Security
 
@@ -210,7 +210,7 @@ Deserialized state is checked twice:
    - types registered on the serializer's `Validator`;
    - the `SlotTypeResolver` built-ins, or a resolver registered with `AddResolver` (JSON only).
 
-   To allow your own types, register them on a validator. `ValidationOptions.Lenient` checks only the types, not frame descriptors:
+   To allow your own types, register them on a validator. `ValidationOptions.Lenient` skips frame descriptor checks, and on this allow-list it still checks types. A Lenient validator set on `ContinuationRunner.Validator` skips slot type checks entirely, so use it there only for state you trust:
 
    ```csharp
    var validator = new ContinuationValidator(ValidationOptions.Lenient);
@@ -222,7 +222,7 @@ Deserialized state is checked twice:
 
    If you pass your own `JsonSerializerSettings` with a `SerializationBinder` already set, that binder is used instead, and what it allows is up to you. `MessagePackContinuationSerializer` uses the contractless resolver, which ignores type names in the payload; custom reference types are rebuilt only when the `Validator` allows them. Do not give it options with a typeless resolver for untrusted input.
 
-2. **Before resuming.** `ContinuationValidator` checks known method tokens (via registered `FrameDescriptor`s), valid yield point IDs, slot counts and types, maximum stack depth, and an allow-list of types. Set it on `ContinuationRunner.Validator` (or the serializer's `Validator`) when state comes from anywhere you do not trust.
+2. **Before resuming.** `ContinuationValidator` checks known method tokens (via registered `FrameDescriptor`s), valid yield point IDs, slot counts and types, maximum stack depth, and an allow-list of types. Set it on `ContinuationRunner.Validator` (or the serializer's `Validator`) when state comes from anywhere you do not trust. The validator checks each frame independently; it does not verify that the frames form a valid call chain.
 
 ## Building
 

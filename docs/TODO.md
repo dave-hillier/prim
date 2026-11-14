@@ -50,9 +50,11 @@ Location: [MethodTransformer.cs](../src/Prim.Cecil/MethodTransformer.cs)
 
 - MessagePack does not preserve reference identity between slots (the skipped test
   in `SerializationTests`). JSON does.
-- A `DateTimeOffset` passed as the yielded value (`ContinuationState.YieldedValue`)
-  comes back from JSON as a `DateTime` without its offset. Unlike slots, the
-  yielded value carries no type name, so fixing it needs a wire-format change.
+- A `DateTime` or `DateTimeOffset` passed as the yielded value
+  (`ContinuationState.YieldedValue`) comes back from JSON as an ISO-8601 `string`
+  (JSON date parsing is off, so date-looking strings are never converted). The
+  offset is kept in the text. Unlike slots, the yielded value carries no type
+  name, so restoring the original type needs a wire-format change.
 
 ## What's Done
 

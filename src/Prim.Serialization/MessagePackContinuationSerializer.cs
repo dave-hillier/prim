@@ -234,7 +234,15 @@ namespace Prim.Serialization
         /// </summary>
         private object[] DecodeSlots(SlotEnvelope[] envelopes)
         {
-            var decoded = _codec.Decode(envelopes);
+            object[] decoded;
+            try
+            {
+                decoded = _codec.Decode(envelopes);
+            }
+            catch (TypeLoadException ex)
+            {
+                throw new MessagePackSerializationException(ex.Message, ex);
+            }
             if (decoded == null || envelopes == null) return decoded;
 
             for (var i = 0; i < envelopes.Length && i < decoded.Length; i++)

@@ -27,6 +27,14 @@ namespace Prim.Runtime
         public EntryPointRegistry EntryPoints { get; set; }
 
         /// <summary>
+        /// Instruction budget applied to every <see cref="ScriptContext"/> this runner
+        /// creates in <c>Run</c> and <c>Resume</c>. When null (the default) the
+        /// context's own default budget is used. An existing
+        /// <see cref="ScriptContext.Current"/> that <c>Run</c> reuses is left unchanged.
+        /// </summary>
+        public int? InstructionBudget { get; set; }
+
+        /// <summary>
         /// Runs a computation that may suspend.
         /// </summary>
         /// <typeparam name="T">The return type of the computation.</typeparam>
@@ -36,7 +44,7 @@ namespace Prim.Runtime
         {
             if (computation == null) throw new ArgumentNullException(nameof(computation));
 
-            var context = ScriptContext.Current ?? new ScriptContext();
+            var context = ScriptContext.Current ?? NewContext();
             return RunWithContext<T>(context, computation);
         }
 
@@ -71,7 +79,7 @@ namespace Prim.Runtime
             // Validate if validator is configured
             Validator?.Validate(continuation.State);
 
-            var context = new ScriptContext(continuation.State, resumeValue);
+            var context = NewContext(continuation.State, resumeValue);
             return RunRestoringWithContext<T>(context);
         }
 
@@ -95,7 +103,7 @@ namespace Prim.Runtime
             // Validate if validator is configured
             Validator?.Validate(state);
 
-            var context = new ScriptContext(state, resumeValue);
+            var context = NewContext(state, resumeValue);
             return RunWithContext(context, entryPoint);
         }
 
@@ -105,6 +113,13 @@ namespace Prim.Runtime
         public static void RequestYield()
         {
             ScriptContext.Current?.RequestYield();
+        }
+
+        private ScriptContext NewContext(ContinuationState state = null, object resumeValue = null)
+        {
+            var context = state == null ? new ScriptContext() : new ScriptContext(state, resumeValue);
+            if (InstructionBudget.HasValue) context.InstructionBudget = InstructionBudget.Value;
+            return context;
         }
 
         private ContinuationResult<T> RunWithContext<T>(ScriptContext context, Func<T> computation)
@@ -142,6 +157,17 @@ namespace Prim.Runtime
             // Look up the entry point delegate by method token
             if (!EntryPoints.TryGet<T>(rootFrame.MethodToken, out var entryPoint))
             {
+                // Action-registered entry points resume as Unit.
+                if (typeof(T) == typeof(Unit) && EntryPoints.TryGetAction(rootFrame.MethodToken, out var action))
+                {
+                    Func<T> adapted = () =>
+                    {
+                        action();
+                        return (T)(object)Unit.Value;
+                    };
+                    return RunWithContext(context, adapted);
+                }
+
                 throw new InvalidOperationException(
                     $"No entry point registered for method token {rootFrame.MethodToken}. " +
                     "Register entry points with EntryPoints.Register() before resuming.");
