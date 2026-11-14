@@ -16,9 +16,18 @@ namespace Prim.Analysis
         public int Id { get; set; }
 
         /// <summary>
-        /// The instruction where this yield point should be inserted.
+        /// The suspending instruction (the back-edge's last instruction, or the call).
         /// </summary>
         public Instruction Instruction { get; set; }
+
+        /// <summary>
+        /// Where the yield-point code goes: <see cref="Instruction"/>, or the first of the
+        /// prefixes (<c>volatile.</c>, <c>unaligned.</c>, <c>readonly.</c>, <c>tail.</c>,
+        /// <c>constrained.</c>, <c>no.</c>) in front of it. A prefix must immediately precede
+        /// the instruction it modifies, so nothing may be inserted between them. Null means
+        /// <see cref="Instruction"/>.
+        /// </summary>
+        public Instruction InsertionPoint { get; set; }
 
         /// <summary>
         /// The kind of yield point.
@@ -187,6 +196,7 @@ namespace Prim.Analysis
                     {
                         Id = nextId++,
                         Instruction = lastInstruction,
+                        InsertionPoint = FirstPrefix(lastInstruction),
                         Kind = ILYieldPointKind.BackwardBranch,
                         StackState = _stackSim.GetStateAt(lastInstruction.Offset)
                     });
@@ -223,6 +233,7 @@ namespace Prim.Analysis
                     {
                         Id = nextId++,
                         Instruction = instruction,
+                        InsertionPoint = FirstPrefix(instruction),
                         Kind = kind,
                         StackState = _stackSim.GetStateAt(instruction.Offset)
                     });
@@ -247,6 +258,20 @@ namespace Prim.Analysis
         /// place, with the reason for each.
         /// </summary>
         public IReadOnlyList<SkippedYieldPoint> SkippedYieldPoints => _skipped;
+
+        /// <summary>
+        /// The first of the prefix opcodes immediately in front of
+        /// <paramref name="instruction"/>, or the instruction itself if it has none.
+        /// </summary>
+        public static Instruction FirstPrefix(Instruction instruction)
+        {
+            var first = instruction;
+            while (first.Previous != null && first.Previous.OpCode.OpCodeType == OpCodeType.Prefix)
+            {
+                first = first.Previous;
+            }
+            return first;
+        }
 
         private bool Skip(Instruction instruction, ILYieldPointKind kind)
         {

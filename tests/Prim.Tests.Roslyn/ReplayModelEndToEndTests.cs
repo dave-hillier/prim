@@ -1,3 +1,4 @@
+using System.Linq;
 using Prim.Core;
 using Prim.Runtime;
 using Xunit;
@@ -78,6 +79,34 @@ namespace Prim.Tests.Roslyn
 
             Assert.True(resumed.IsCompleted, "Resumed method should complete.");
             Assert.Equal(10, ((ContinuationResult<int>.Completed)resumed).Value);
+        }
+
+        [Theory]
+        [InlineData(5)]
+        [InlineData(13)]
+        public void NestedCallInLoop_SuspendedAtManyYieldPoints_Completes(int budget)
+        {
+            // Small budgets make the method suspend at loop iterations and inside the
+            // nested InnerSum calls, not just at the first yield point. Every resume
+            // replays from the top with checks off until the suspended site is reached.
+            var instance = new SampleContinuableClass();
+            var outcome = GeneratorHarness.RunToCompletion(() => instance.NestedCallInLoop_Continuable(), budget, serialize: true);
+
+            Assert.Equal(10, outcome.Value);
+            Assert.True(outcome.Suspensions > 1, $"Only {outcome.Suspensions} suspension(s).");
+            Assert.Contains(2, outcome.Depths);
+        }
+
+        [Fact]
+        public void ComplexControlFlow_SuspendedAtManyYieldPoints_Completes()
+        {
+            var instance = new SampleContinuableClass();
+            var expected = instance.ComplexControlFlow(9);
+            var outcome = GeneratorHarness.RunToCompletion(() => instance.ComplexControlFlow_Continuable(9), budget: 15, serialize: true);
+
+            Assert.Equal(expected, outcome.Value);
+            Assert.True(outcome.Suspensions > 3);
+            Assert.True(outcome.InnermostYieldPoints.Distinct().Count() > 1, "Expected suspensions at more than one yield point.");
         }
 
         [Fact]

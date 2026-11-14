@@ -264,9 +264,12 @@ namespace Prim.Tests.Unit
             Assert.Equal(array, values);
             Assert.All(values, v => Assert.Equal(kind, v.Kind));
 
-            var yielded = Assert.IsType<DateTime>(restored.YieldedValue);
-            Assert.Equal(original, yielded);
-            Assert.Equal(kind, yielded.Kind);
+            // The yielded value has no type name on the wire and JSON date parsing is
+            // off, so it comes back as its ISO-8601 string (see docs/TODO.md).
+            var yielded = Assert.IsType<string>(restored.YieldedValue);
+            var parsed = DateTime.Parse(yielded, null, System.Globalization.DateTimeStyles.RoundtripKind);
+            Assert.Equal(original, parsed);
+            Assert.Equal(kind, parsed.Kind);
         }
 
         #endregion

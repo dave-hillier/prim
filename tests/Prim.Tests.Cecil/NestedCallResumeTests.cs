@@ -158,8 +158,9 @@ namespace Prim.Tests.Cecil
         [Fact]
         public void Transform_ByRefArgumentAtContinuableCall_IsSkippedWithDiagnostic()
         {
-            // Outer passes 'ref total' to a transformed callee: the managed pointer on the
-            // eval stack at the call site cannot be spilled into the frame record.
+            // Outer stores a transformed callee's result through a managed pointer it pushed
+            // before the call: the pointer on the eval stack at the call site cannot be
+            // spilled into the frame record.
             var assembly = CreateAssemblyWithByRefCall();
             var rewriter = new AssemblyRewriter();
 
@@ -362,25 +363,37 @@ namespace Prim.Tests.Cecil
             testClass.CustomAttributes.Add(new CustomAttribute(attrCtor));
             module.Types.Add(testClass);
 
-            // static void Bump(ref int x) { x = x + 1; }
-            var bump = new MethodDefinition(
-                "Bump",
+            // static int Count() { int i = 0; while (i < 3) i++; return i; }
+            // A transformed callee (it has a loop), so a call to it is a resume point. (A
+            // callee with a ref parameter would itself be skipped, and calls to a skipped
+            // method are not resume points.)
+            var count = new MethodDefinition(
+                "Count",
                 Mono.Cecil.MethodAttributes.Public | Mono.Cecil.MethodAttributes.Static,
-                module.TypeSystem.Void);
-            bump.Parameters.Add(new ParameterDefinition(
-                "x", Mono.Cecil.ParameterAttributes.None, new ByReferenceType(module.TypeSystem.Int32)));
-            bump.CustomAttributes.Add(new CustomAttribute(attrCtor));
-            var bil = bump.Body.GetILProcessor();
-            bil.Emit(OpCodes.Ldarg_0);
-            bil.Emit(OpCodes.Ldarg_0);
-            bil.Emit(OpCodes.Ldind_I4);
-            bil.Emit(OpCodes.Ldc_I4_1);
-            bil.Emit(OpCodes.Add);
-            bil.Emit(OpCodes.Stind_I4);
-            bil.Emit(OpCodes.Ret);
-            testClass.Methods.Add(bump);
+                module.TypeSystem.Int32);
+            count.CustomAttributes.Add(new CustomAttribute(attrCtor));
+            count.Body.InitLocals = true;
+            var i = new VariableDefinition(module.TypeSystem.Int32);
+            count.Body.Variables.Add(i);
+            var cil = count.Body.GetILProcessor();
+            var condition = cil.Create(OpCodes.Ldloc, i);
+            cil.Emit(OpCodes.Ldc_I4_0);
+            cil.Emit(OpCodes.Stloc, i);
+            cil.Emit(OpCodes.Br, condition);
+            var loopBody = cil.Create(OpCodes.Ldloc, i);
+            cil.Append(loopBody);
+            cil.Emit(OpCodes.Ldc_I4_1);
+            cil.Emit(OpCodes.Add);
+            cil.Emit(OpCodes.Stloc, i);
+            cil.Append(condition);
+            cil.Emit(OpCodes.Ldc_I4_3);
+            cil.Emit(OpCodes.Blt, loopBody);
+            cil.Emit(OpCodes.Ldloc, i);
+            cil.Emit(OpCodes.Ret);
+            testClass.Methods.Add(count);
 
-            // static int Outer() { int total = 0; Bump(ref total); return total; }
+            // static int Outer() { int total = 0; total = Count(); return total; }, with the
+            // store emitted as 'ldloca total; call Count; stind.i4'.
             var outer = new MethodDefinition(
                 "Outer",
                 Mono.Cecil.MethodAttributes.Public | Mono.Cecil.MethodAttributes.Static,
@@ -393,7 +406,8 @@ namespace Prim.Tests.Cecil
             oil.Emit(OpCodes.Ldc_I4_0);
             oil.Emit(OpCodes.Stloc, total);
             oil.Emit(OpCodes.Ldloca, total);
-            oil.Emit(OpCodes.Call, bump);
+            oil.Emit(OpCodes.Call, count);
+            oil.Emit(OpCodes.Stind_I4);
             oil.Emit(OpCodes.Ldloc, total);
             oil.Emit(OpCodes.Ret);
             testClass.Methods.Add(outer);

@@ -21,6 +21,10 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore Prim.sln
 
+      # The Cecil tests run ilverify, a local tool.
+      - name: Restore local tools
+        run: dotnet tool restore
+
       # dotnet list always exits 0, so fail on its report text instead.
       - name: Check for vulnerable packages
         run: |
