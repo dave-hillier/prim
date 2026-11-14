@@ -133,18 +133,22 @@ namespace Prim.Roslyn
     /// resume and to describe the method in diagnostics/comments.
     ///
     /// A yield point is emitted for:
-    ///   - each loop header (while / for / foreach / do)  -> LoopBackEdge
-    ///   - each statement that contains a call to a known continuable method
-    ///     (statement granularity, including sub-expression calls) -> NestedMethodCall
+    ///   - each loop (while / for / foreach / do), checked at the start of every
+    ///     iteration -> LoopBackEdge
+    ///   - each non-structural statement that directly contains a call to a known
+    ///     continuable method (statement granularity, including sub-expression calls,
+    ///     but not calls inside lambdas, local functions or nested statements)
+    ///     -> NestedMethodCall
     ///
-    /// Pass the set of continuable method names so nested calls are recognised by their
-    /// ORIGINAL name (the emitter rewrites them to *_Continuable afterwards). When the
-    /// set is null/empty the analyzer falls back to recognising already-suffixed
-    /// *_Continuable names, which keeps the standalone analyzer unit tests meaningful.
+    /// Continuable calls are recognised by a predicate (the generator passes one that
+    /// resolves the invoked symbol) or by a set of ORIGINAL method names. With neither,
+    /// the analyzer falls back to recognising already-suffixed *_Continuable names,
+    /// which keeps the standalone analyzer unit tests meaningful.
     /// </summary>
     public class YieldPointAnalyzer
     {
         private readonly HashSet<string> _continuableMethodNames;
+        private readonly System.Func<InvocationExpressionSyntax, bool> _isContinuableCall;
 
         public YieldPointAnalyzer()
         {
@@ -153,6 +157,25 @@ namespace Prim.Roslyn
         public YieldPointAnalyzer(HashSet<string> continuableMethodNames)
         {
             _continuableMethodNames = continuableMethodNames;
+        }
+
+        /// <summary>
+        /// Creates an analyzer that decides which invocations are continuable calls with
+        /// <paramref name="isContinuableCall"/>. The generator passes a predicate that
+        /// resolves the invoked symbol through the semantic model.
+        /// </summary>
+        public YieldPointAnalyzer(System.Func<InvocationExpressionSyntax, bool> isContinuableCall)
+        {
+            _isContinuableCall = isContinuableCall;
+        }
+
+        private bool HasContinuableSet =>
+            _isContinuableCall != null || (_continuableMethodNames != null && _continuableMethodNames.Count > 0);
+
+        private bool MatchesContinuable(InvocationExpressionSyntax invocation)
+        {
+            if (_isContinuableCall != null) return _isContinuableCall(invocation);
+            return _continuableMethodNames != null && _continuableMethodNames.Contains(GetSimpleMethodName(invocation));
         }
 
         /// <summary>
@@ -170,7 +193,7 @@ namespace Prim.Roslyn
         {
             var yieldPoints = new List<YieldPointInfo>();
             var tryBlocks = new List<TryBlockInfo>();
-            var visitor = new YieldPointVisitor(yieldPoints, tryBlocks, _continuableMethodNames);
+            var visitor = new YieldPointVisitor(yieldPoints, tryBlocks, _continuableMethodNames, _isContinuableCall);
             visitor.Visit(method.Body);
             return (yieldPoints, tryBlocks);
         }
@@ -184,13 +207,16 @@ namespace Prim.Roslyn
         /// YieldPointId, the resume dispatch, and the "{Count} yield point(s)" comment all
         /// agree.
         ///
-        /// The traversal mirrors <c>ContinuationGenerator.GenerateStatement</c> exactly:
-        ///   - a loop statement (while/for/foreach/do) contributes one LoopBackEdge point
-        ///     at its header, THEN its body is walked;
-        ///   - a non-control-flow statement that contains a call to a known continuable
-        ///     method contributes exactly one NestedMethodCall point (statement
-        ///     granularity, including sub-expression calls);
-        ///   - if/try/using/block recurse into their children in source order.
+        /// The traversal mirrors <c>ContinuationGenerator.MethodEmitter.EmitStatement</c>
+        /// and uses the same helpers:
+        ///   - a loop (while/for/foreach/do) contributes one LoopBackEdge point (checked
+        ///     at the start of every iteration), THEN its body is walked;
+        ///   - a non-structural statement for which
+        ///     <see cref="FindStatementContinuableCall"/> finds a call contributes exactly
+        ///     one NestedMethodCall point;
+        ///   - structural statements (<see cref="IsStructuralStatement"/>: block, if, try,
+        ///     using, switch, checked, unsafe, labeled, loops) recurse into their child
+        ///     statements in source order.
         /// </summary>
         public List<YieldPointInfo> PlanEmittedYieldPoints(MethodDeclarationSyntax method)
         {
@@ -210,18 +236,16 @@ namespace Prim.Roslyn
 
         private void PlanStatement(StatementSyntax statement, List<YieldPointInfo> plan)
         {
-            // Loop header yield point (emitter: GenerateStatement, before recursing).
-            var isLoop = statement is WhileStatementSyntax || statement is ForStatementSyntax ||
-                         statement is ForEachStatementSyntax || statement is DoStatementSyntax;
-            if (isLoop)
+            // Loop: one yield point, checked at the start of every iteration (emitter:
+            // EmitLoop takes the id before walking the body).
+            if (IsLoopStatement(statement))
             {
                 plan.Add(NewPlanPoint(statement.GetFirstToken().GetLocation(), YieldPointKind.LoopBackEdge, plan));
             }
 
-            // Statement-level continuable call (emitter: FindContinuableMethodCall +
-            // GenerateNestedMethodCallStatement). Excluded for control-flow statements,
-            // which recurse into their children instead.
-            if (!IsControlFlowStatement(statement))
+            // Statement-level continuable call (emitter: EmitStatement). Structural
+            // statements recurse into their children instead.
+            if (!IsStructuralStatement(statement))
             {
                 var call = FindStatementContinuableCall(statement);
                 if (call != null)
@@ -230,8 +254,8 @@ namespace Prim.Roslyn
                     point.CalledMethodName = GetSimpleMethodName(call);
                     point.InvocationSyntax = call;
                     plan.Add(point);
-                    return; // emitter returns after handling the nested call statement
                 }
+                return;
             }
 
             switch (statement)
@@ -247,66 +271,133 @@ namespace Prim.Roslyn
                         PlanStatements(tryStatement.Finally.Block.Statements, plan);
                     break;
                 case UsingStatementSyntax usingStatement:
-                    if (usingStatement.Statement is BlockSyntax usingBlock)
-                        PlanStatements(usingBlock.Statements, plan);
-                    else
-                        PlanStatement(usingStatement.Statement, plan);
+                    PlanStatement(usingStatement.Statement, plan);
                     break;
                 case IfStatementSyntax ifStatement:
-                    PlanBranch(ifStatement.Statement, plan);
+                    PlanStatement(ifStatement.Statement, plan);
                     if (ifStatement.Else != null)
-                        PlanBranch(ifStatement.Else.Statement, plan);
+                        PlanStatement(ifStatement.Else.Statement, plan);
+                    break;
+                case SwitchStatementSyntax switchStatement:
+                    foreach (var section in switchStatement.Sections)
+                        PlanStatements(section.Statements, plan);
+                    break;
+                case CheckedStatementSyntax checkedStatement:
+                    PlanStatements(checkedStatement.Block.Statements, plan);
+                    break;
+                case UnsafeStatementSyntax unsafeStatement:
+                    PlanStatements(unsafeStatement.Block.Statements, plan);
+                    break;
+                case LabeledStatementSyntax labeled:
+                    PlanStatement(labeled.Statement, plan);
                     break;
                 case WhileStatementSyntax whileStatement:
-                    PlanBranch(whileStatement.Statement, plan);
-                    break;
-                case ForStatementSyntax forStatement:
-                    PlanBranch(forStatement.Statement, plan);
-                    break;
-                case ForEachStatementSyntax foreachStatement:
-                    PlanBranch(foreachStatement.Statement, plan);
+                    PlanStatement(whileStatement.Statement, plan);
                     break;
                 case DoStatementSyntax doStatement:
-                    PlanBranch(doStatement.Statement, plan);
+                    PlanStatement(doStatement.Statement, plan);
+                    break;
+                case ForStatementSyntax forStatement:
+                    PlanStatement(forStatement.Statement, plan);
+                    break;
+                case CommonForEachStatementSyntax foreachStatement:
+                    PlanStatement(foreachStatement.Statement, plan);
                     break;
             }
         }
 
-        private void PlanBranch(StatementSyntax statement, List<YieldPointInfo> plan)
-        {
-            if (statement is BlockSyntax block)
-                PlanStatements(block.Statements, plan);
-            else
-                PlanStatement(statement, plan);
-        }
-
-        private static bool IsControlFlowStatement(StatementSyntax statement)
+        /// <summary>
+        /// Statements the emitter walks itself (rather than copying verbatim): their child
+        /// statements are emitted one by one, so yield sites inside them are planned.
+        /// Everything else (expression statements, declarations, lock, fixed, local
+        /// functions, ...) is copied as a unit.
+        /// </summary>
+        public static bool IsStructuralStatement(StatementSyntax statement)
         {
             return statement is BlockSyntax || statement is TryStatementSyntax ||
-                   statement is IfStatementSyntax || statement is WhileStatementSyntax ||
-                   statement is ForStatementSyntax || statement is ForEachStatementSyntax ||
-                   statement is DoStatementSyntax || statement is UsingStatementSyntax;
+                   statement is IfStatementSyntax || statement is UsingStatementSyntax ||
+                   statement is SwitchStatementSyntax || statement is CheckedStatementSyntax ||
+                   statement is UnsafeStatementSyntax || statement is LabeledStatementSyntax ||
+                   IsLoopStatement(statement);
         }
 
-        private InvocationExpressionSyntax FindStatementContinuableCall(StatementSyntax statement)
+        /// <summary>
+        /// True for while / do / for / foreach (including deconstructing foreach).
+        /// </summary>
+        public static bool IsLoopStatement(SyntaxNode node)
         {
-            if (_continuableMethodNames == null || _continuableMethodNames.Count == 0)
+            return node is WhileStatementSyntax || node is ForStatementSyntax ||
+                   node is CommonForEachStatementSyntax || node is DoStatementSyntax;
+        }
+
+        /// <summary>
+        /// True for a lambda, anonymous method or local function: code inside runs when
+        /// the delegate is invoked, not as part of the enclosing statement.
+        /// </summary>
+        public static bool IsFunctionBoundary(SyntaxNode node)
+        {
+            return node is AnonymousFunctionExpressionSyntax || node is LocalFunctionStatementSyntax;
+        }
+
+        /// <summary>
+        /// True if every statement enclosing <paramref name="statement"/> up to
+        /// <paramref name="body"/> is structural, i.e. the emitter reaches
+        /// <paramref name="statement"/> by walking rather than by copying something that
+        /// contains it.
+        /// </summary>
+        public static bool IsInWalkedPosition(StatementSyntax statement, SyntaxNode body)
+        {
+            if (statement == body) return true;
+            for (var p = statement.Parent; p != null; p = p.Parent)
+            {
+                if (p == body) return true;
+                if (IsFunctionBoundary(p)) return false;
+                if (p is StatementSyntax s && !IsStructuralStatement(s)) return false;
+                if (p is ExpressionSyntax) return false;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The first continuable call that belongs to <paramref name="statement"/> itself:
+        /// not inside a lambda, local function or nested statement.
+        /// </summary>
+        public InvocationExpressionSyntax FindStatementContinuableCall(StatementSyntax statement)
+        {
+            if (!HasContinuableSet || statement is LocalFunctionStatementSyntax)
                 return null;
 
-            foreach (var invocation in statement.DescendantNodes().OfType<InvocationExpressionSyntax>())
+            var nodes = statement.DescendantNodes(n =>
+                n == statement || !(n is StatementSyntax || IsFunctionBoundary(n)));
+            foreach (var invocation in nodes.OfType<InvocationExpressionSyntax>())
             {
-                if (_continuableMethodNames.Contains(GetSimpleMethodName(invocation)))
+                if (IsInsideFunction(invocation, statement)) continue;
+                if (MatchesContinuable(invocation))
                     return invocation;
             }
             return null;
         }
 
-        private static string GetSimpleMethodName(InvocationExpressionSyntax invocation)
+        private static bool IsInsideFunction(SyntaxNode node, SyntaxNode stopAt)
+        {
+            for (var p = node.Parent; p != null && p != stopAt; p = p.Parent)
+            {
+                if (IsFunctionBoundary(p)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The invoked method's simple name (<c>M</c> for <c>M(...)</c>, <c>x.M(...)</c>
+        /// and <c>x?.M(...)</c>), or an empty string.
+        /// </summary>
+        public static string GetSimpleMethodName(InvocationExpressionSyntax invocation)
         {
             return invocation.Expression switch
             {
                 IdentifierNameSyntax id => id.Identifier.Text,
                 MemberAccessExpressionSyntax ma => ma.Name.Identifier.Text,
+                MemberBindingExpressionSyntax mb => mb.Name.Identifier.Text,
                 _ => ""
             };
         }
@@ -349,6 +440,10 @@ namespace Prim.Roslyn
 
                 if (location == null) continue;
 
+                // Code inside a lambda or local function runs when the delegate is
+                // invoked; it is not a yield point of this method.
+                if (IsInsideFunction(node, method.Body)) continue;
+
                 var kind = ClassifyEnclosingForbiddenRegion(node, method.Body);
                 if (kind != ForbiddenRegionKind.None)
                 {
@@ -359,14 +454,10 @@ namespace Prim.Roslyn
             return results;
         }
 
-        private static bool IsLoopStatement(SyntaxNode node)
-        {
-            return node is WhileStatementSyntax || node is ForStatementSyntax ||
-                   node is ForEachStatementSyntax || node is DoStatementSyntax;
-        }
-
         private bool IsYieldingInvocation(InvocationExpressionSyntax invocation)
         {
+            if (_isContinuableCall != null) return _isContinuableCall(invocation);
+
             var simpleName = GetSimpleMethodName(invocation);
 
             if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleName))
@@ -410,6 +501,7 @@ namespace Prim.Roslyn
             private readonly List<YieldPointInfo> _yieldPoints;
             private readonly List<TryBlockInfo> _tryBlocks;
             private readonly HashSet<string> _continuableMethodNames;
+            private readonly System.Func<InvocationExpressionSyntax, bool> _isContinuableCall;
             private int _nextYieldPointId = 0;
             private int _nextTryBlockId = 0;
 
@@ -424,11 +516,16 @@ namespace Prim.Roslyn
             private bool _inCatchBlock = false;
             private CatchClauseInfo _currentCatchClause = null;
 
-            public YieldPointVisitor(List<YieldPointInfo> yieldPoints, List<TryBlockInfo> tryBlocks, HashSet<string> continuableMethodNames = null)
+            public YieldPointVisitor(
+                List<YieldPointInfo> yieldPoints,
+                List<TryBlockInfo> tryBlocks,
+                HashSet<string> continuableMethodNames = null,
+                System.Func<InvocationExpressionSyntax, bool> isContinuableCall = null)
             {
                 _yieldPoints = yieldPoints;
                 _tryBlocks = tryBlocks;
                 _continuableMethodNames = continuableMethodNames;
+                _isContinuableCall = isContinuableCall;
             }
 
             private YieldPointInfo AddYieldPoint(Location location, YieldPointKind kind)
@@ -559,7 +656,10 @@ namespace Prim.Roslyn
                 // continuable method names by their ORIGINAL name (it rewrites them to
                 // *_Continuable afterwards), so when the set is present we match on it
                 // and emit a NestedMethodCall the replay emitter understands.
-                if (_continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName))
+                var isContinuable = _isContinuableCall != null
+                    ? _isContinuableCall(node)
+                    : _continuableMethodNames != null && _continuableMethodNames.Contains(simpleMethodName);
+                if (isContinuable)
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.NestedMethodCall);
                     yieldPoint.CalledMethodName = simpleMethodName;
@@ -568,7 +668,7 @@ namespace Prim.Roslyn
                 }
                 // Standalone analyzer mode: no name set supplied, so recognise the
                 // already-suffixed *_Continuable form and report it as ContinuableCall.
-                else if (_continuableMethodNames == null && methodName.EndsWith("_Continuable"))
+                else if (_continuableMethodNames == null && _isContinuableCall == null && methodName.EndsWith("_Continuable"))
                 {
                     var yieldPoint = AddYieldPoint(node.GetLocation(), YieldPointKind.ContinuableCall);
                     yieldPoint.CalledMethodName = simpleMethodName;
