@@ -46,14 +46,30 @@ namespace Prim.Analysis
     /// Merge policy: at a join point the depths of all incoming edges must agree.
     /// This is required by ECMA-335 for verifiable IL. If they disagree the simulator
     /// throws <see cref="InvalidProgramException"/> (the input IL is not valid). When
-    /// depths agree but the per-slot types differ, the merged slot type is widened to
-    /// <c>System.Object</c> (a safe common supertype the spiller can box into).
+    /// depths agree but the per-slot types differ, they merge as the verifier merges them
+    /// (ECMA-335 III.1.8.1.3): int32-family types to int32, object references to their
+    /// closest common base class, the null literal into any object reference. A merge the
+    /// simulator cannot name with confidence yields <see cref="UnknownType"/>.
     /// </para>
     /// </summary>
     public sealed class StackSimulator
     {
+        /// <summary>
+        /// Stack slot type for a value the simulator cannot type with confidence (for
+        /// example a method pointer, or a join of unrelated value types). A transformer must
+        /// not spill such a slot.
+        /// </summary>
+        public static readonly TypeReference UnknownType = new TypeReference("", "<unknown>", null, null);
+
+        /// <summary>
+        /// Stack slot type for the null literal. It merges into any object reference; a
+        /// slot still typed null at a yield point holds null on every path.
+        /// </summary>
+        public static readonly TypeReference NullType = new TypeReference("", "<null>", null, null);
+
         private readonly MethodDefinition _method;
         private readonly Dictionary<int, StackState> _stateAtOffset = new Dictionary<int, StackState>();
+        private TypeReference _thisType;
 
         public StackSimulator(MethodDefinition method)
         {
@@ -283,7 +299,7 @@ namespace Prim.Analysis
         /// Merges <paramref name="incoming"/> into the recorded entry state of
         /// <paramref name="succ"/>. Returns true if the entry state changed (and the
         /// successor must be re-enqueued). Depths must agree (ECMA-335); differing
-        /// slot types widen to System.Object.
+        /// slot types merge as described on the class.
         /// </summary>
         private bool MergeInto(
             Dictionary<BasicBlock, List<TypeReference>> blockEntry,
@@ -324,12 +340,86 @@ namespace Prim.Analysis
             if (a == null) return b;
             if (b == null) return a;
             if (a.FullName == b.FullName) return a;
-            // A managed pointer must stay recognisable as one; widening it to object would
-            // hide that it cannot be spilled.
-            if (a.IsByReference) return a;
-            if (b.IsByReference) return b;
-            // Differing types widen to a safe common supertype.
-            return _method.Module.TypeSystem.Object;
+
+            var ca = Category(a);
+            var cb = Category(b);
+
+            // A managed or unmanaged pointer must stay recognisable as one; widening it
+            // would hide that it cannot be spilled.
+            if (ca == StackCategory.ByRef || ca == StackCategory.Pointer) return a;
+            if (cb == StackCategory.ByRef || cb == StackCategory.Pointer) return b;
+
+            if (ca == StackCategory.Unknown || cb == StackCategory.Unknown) return UnknownType;
+
+            // The null literal merges into any object reference.
+            if (ca == StackCategory.Null) return cb == StackCategory.Reference ? b : UnknownType;
+            if (cb == StackCategory.Null) return ca == StackCategory.Reference ? a : UnknownType;
+
+            var ts = _method.Module.TypeSystem;
+            if (ca == cb)
+            {
+                switch (ca)
+                {
+                    // bool, char, int8..uint32 are all int32 on the evaluation stack.
+                    case StackCategory.Int32: return ts.Int32;
+                    case StackCategory.Int64: return ts.Int64;
+                    case StackCategory.NativeInt: return ts.IntPtr;
+                    case StackCategory.Float: return ts.Double;
+                    case StackCategory.Reference: return CommonBaseClass(a, b);
+                }
+            }
+
+            // Different value types, a generic parameter against anything else, or kinds
+            // that cannot meet in verifiable IL.
+            return UnknownType;
+        }
+
+        /// <summary>
+        /// The closest common base class of two object references, as the verifier
+        /// computes it (ECMA-335 III.1.8.1.3), or <see cref="UnknownType"/> when it cannot be
+        /// named with confidence (arrays, generic instances, interfaces, unresolvable types,
+        /// or a common base defined outside this module other than System.Object).
+        /// </summary>
+        private TypeReference CommonBaseClass(TypeReference a, TypeReference b)
+        {
+            var ts = _method.Module.TypeSystem;
+            if (a.FullName == "System.Object" || b.FullName == "System.Object") return ts.Object;
+
+            var chainA = BaseChain(a);
+            var chainB = BaseChain(b);
+            if (chainA == null || chainB == null) return UnknownType;
+
+            foreach (var candidate in chainB)
+            {
+                var match = chainA.FirstOrDefault(t => t.FullName == candidate.FullName);
+                if (match == null) continue;
+                if (match.FullName == "System.Object") return ts.Object;
+                return match.Module == _method.Module ? match : UnknownType;
+            }
+            return UnknownType;
+        }
+
+        private static List<TypeReference> BaseChain(TypeReference type)
+        {
+            var chain = new List<TypeReference>();
+            var current = type;
+            while (current != null)
+            {
+                if (current.IsArray || current.IsGenericInstance || current.IsGenericParameter) return null;
+                TypeDefinition definition;
+                try
+                {
+                    definition = current.Resolve();
+                }
+                catch (AssemblyResolutionException)
+                {
+                    return null;
+                }
+                if (definition == null || definition.IsInterface) return null;
+                chain.Add(current);
+                current = definition.BaseType;
+            }
+            return chain;
         }
 
         /// <summary>
@@ -466,14 +556,22 @@ namespace Prim.Analysis
         }
 
         /// <summary>
-        /// Determines the type pushed by an instruction at push-slot <paramref name="index"/>.
-        /// Covers the common cases the eval-stack spiller needs; falls back to
-        /// System.Object for anything not modeled.
+        /// Determines the type pushed by an instruction at push-slot <paramref name="index"/>,
+        /// following ECMA-335 III.1.5 (evaluation-stack types) for every opcode that pushes.
+        /// Member signatures are resolved against their generic instantiation. A value the
+        /// simulator cannot type with confidence (a method pointer, a typed reference, ...)
+        /// is <see cref="UnknownType"/>; the null literal is <see cref="NullType"/>.
         /// </summary>
         private TypeReference GetPushType(Instruction instruction, int index, List<TypeReference> stackBeforePush)
         {
             var ts = _method.Module.TypeSystem;
             var code = instruction.OpCode.Code;
+
+            TypeReference Top(int depth)
+            {
+                int i = stackBeforePush.Count - 1 - depth;
+                return i >= 0 ? stackBeforePush[i] ?? UnknownType : UnknownType;
+            }
 
             switch (code)
             {
@@ -497,7 +595,7 @@ namespace Prim.Analysis
                 case Code.Ldc_R8:
                     return ts.Double;
                 case Code.Ldnull:
-                    return ts.Object;
+                    return NullType;
                 case Code.Ldstr:
                     return ts.String;
                 case Code.Box:
@@ -505,9 +603,7 @@ namespace Prim.Analysis
 
                 case Code.Ldloc:
                 case Code.Ldloc_S:
-                    if (instruction.Operand is VariableDefinition v)
-                        return v.VariableType;
-                    break;
+                    return instruction.Operand is VariableDefinition v ? v.VariableType : UnknownType;
                 case Code.Ldloc_0:
                     return LocalType(0);
                 case Code.Ldloc_1:
@@ -519,9 +615,7 @@ namespace Prim.Analysis
 
                 case Code.Ldarg:
                 case Code.Ldarg_S:
-                    if (instruction.Operand is ParameterDefinition p)
-                        return p.ParameterType;
-                    break;
+                    return instruction.Operand is ParameterDefinition p ? ParameterType(p) : UnknownType;
                 case Code.Ldarg_0:
                     return ArgType(0);
                 case Code.Ldarg_1:
@@ -533,52 +627,57 @@ namespace Prim.Analysis
 
                 case Code.Ldsfld:
                 case Code.Ldfld:
-                    if (instruction.Operand is FieldReference field)
-                        return field.FieldType;
-                    break;
+                    return instruction.Operand is FieldReference field
+                        ? TypeSubstitution.FieldType(field)
+                        : UnknownType;
 
                 // Address-of loads push a managed pointer. Modelling it as a byref (rather
                 // than widening to object) lets the transformer see that such a slot cannot
                 // be spilled into an object[] frame record.
                 case Code.Ldloca:
                 case Code.Ldloca_S:
-                    if (instruction.Operand is VariableDefinition addrLocal)
-                        return new ByReferenceType(addrLocal.VariableType);
-                    break;
+                    return instruction.Operand is VariableDefinition addrLocal
+                        ? new ByReferenceType(addrLocal.VariableType)
+                        : UnknownType;
                 case Code.Ldarga:
                 case Code.Ldarga_S:
                     if (instruction.Operand is ParameterDefinition addrParam)
-                        return new ByReferenceType(addrParam.ParameterType);
-                    break;
+                    {
+                        var paramType = ParameterType(addrParam);
+                        return paramType.IsByReference ? paramType : new ByReferenceType(paramType);
+                    }
+                    return UnknownType;
                 case Code.Ldflda:
                 case Code.Ldsflda:
-                    if (instruction.Operand is FieldReference addrField)
-                        return new ByReferenceType(addrField.FieldType);
-                    break;
+                    return instruction.Operand is FieldReference addrField
+                        ? new ByReferenceType(TypeSubstitution.FieldType(addrField))
+                        : UnknownType;
                 case Code.Ldelema:
-                    if (instruction.Operand is TypeReference elementType)
-                        return new ByReferenceType(elementType);
-                    break;
+                case Code.Unbox:
+                case Code.Refanyval:
+                    return instruction.Operand is TypeReference addrType
+                        ? new ByReferenceType(addrType)
+                        : UnknownType;
 
                 case Code.Dup:
-                    // Replicate the current top type.
-                    if (stackBeforePush.Count > 0)
-                        return stackBeforePush[stackBeforePush.Count - 1];
-                    return ts.Object;
+                    return Top(0);
 
                 case Code.Newobj:
-                    if (instruction.Operand is MethodReference ctor)
-                        return ctor.DeclaringType;
-                    return ts.Object;
+                    return instruction.Operand is MethodReference ctor ? ctor.DeclaringType : UnknownType;
 
-                // Binary numeric / bitwise / shift operations consume two operands (one for
-                // shifts: value + shift-amount) and push a result whose type follows the
-                // operands (ECMA-335 III.1.5). Inferring it (rather than widening to object)
-                // is essential: when such a result is live at a yield point it is spilled to
-                // a temp local, and a temp typed 'object' would make the post-resume reload +
-                // numeric op unverifiable (ExpectedNumericType). We derive the result type
-                // from the surviving operand(s) using ECMA-335's binary-numeric promotion:
-                // result = the "wider" of the two operand types, with int32 as the default.
+                case Code.Call:
+                case Code.Callvirt:
+                    return instruction.Operand is MethodReference method
+                        ? TypeSubstitution.ReturnType(method)
+                        : UnknownType;
+                case Code.Calli:
+                    return instruction.Operand is CallSite cs
+                        ? TypeSubstitution.Substitute(cs.ReturnType, null, null)
+                        : UnknownType;
+
+                // Binary numeric / bitwise operations: the result type follows the operands
+                // (ECMA-335 III.1.5, tables III.2 and III.5). A temp typed 'object' would make
+                // the post-resume reload + numeric op unverifiable.
                 case Code.Add:
                 case Code.Sub:
                 case Code.Mul:
@@ -595,81 +694,303 @@ namespace Prim.Analysis
                 case Code.Sub_Ovf_Un:
                 case Code.Mul_Ovf:
                 case Code.Mul_Ovf_Un:
-                    return BinaryNumericResult(stackBeforePush, ts);
+                    return BinaryNumericResult(Top(1), Top(0));
+
+                // Shifts: the result has the type of the value shifted (table III.6).
                 case Code.Shl:
                 case Code.Shr:
                 case Code.Shr_Un:
-                    // Shift result type follows the value being shifted (the lower operand);
-                    // the shift amount (top) is discarded.
-                    return stackBeforePush.Count >= 2
-                        ? (stackBeforePush[stackBeforePush.Count - 2] ?? ts.Int32)
-                        : ts.Int32;
+                    return StackNormalized(Top(1));
+
                 case Code.Neg:
                 case Code.Not:
-                    // Unary numeric: result type == operand type.
-                    return stackBeforePush.Count >= 1
-                        ? (stackBeforePush[stackBeforePush.Count - 1] ?? ts.Int32)
-                        : ts.Int32;
-            }
+                case Code.Ckfinite:
+                    return StackNormalized(Top(0));
 
-            // Method-call return values (call / callvirt / calli).
-            if (instruction.Operand is MethodReference method &&
-                method.ReturnType.FullName != "System.Void")
-            {
-                return method.ReturnType;
-            }
-            if (code == Code.Calli && instruction.Operand is CallSite cs &&
-                cs.ReturnType.FullName != "System.Void")
-            {
-                return cs.ReturnType;
-            }
+                // Conversions (table III.8): narrow integers widen to int32 on the stack.
+                case Code.Conv_I1:
+                case Code.Conv_I2:
+                case Code.Conv_I4:
+                case Code.Conv_U1:
+                case Code.Conv_U2:
+                case Code.Conv_U4:
+                case Code.Conv_Ovf_I1:
+                case Code.Conv_Ovf_I2:
+                case Code.Conv_Ovf_I4:
+                case Code.Conv_Ovf_U1:
+                case Code.Conv_Ovf_U2:
+                case Code.Conv_Ovf_U4:
+                case Code.Conv_Ovf_I1_Un:
+                case Code.Conv_Ovf_I2_Un:
+                case Code.Conv_Ovf_I4_Un:
+                case Code.Conv_Ovf_U1_Un:
+                case Code.Conv_Ovf_U2_Un:
+                case Code.Conv_Ovf_U4_Un:
+                    return ts.Int32;
+                case Code.Conv_I8:
+                case Code.Conv_U8:
+                case Code.Conv_Ovf_I8:
+                case Code.Conv_Ovf_U8:
+                case Code.Conv_Ovf_I8_Un:
+                case Code.Conv_Ovf_U8_Un:
+                    return ts.Int64;
+                case Code.Conv_I:
+                case Code.Conv_U:
+                case Code.Conv_Ovf_I:
+                case Code.Conv_Ovf_U:
+                case Code.Conv_Ovf_I_Un:
+                case Code.Conv_Ovf_U_Un:
+                    return ts.IntPtr;
+                case Code.Conv_R4:
+                    return ts.Single;
+                case Code.Conv_R8:
+                case Code.Conv_R_Un:
+                    return ts.Double;
 
-            if (instruction.Operand is FieldReference f)
-            {
-                return f.FieldType;
-            }
+                // Comparisons push an int32 0/1 (table III.4).
+                case Code.Ceq:
+                case Code.Cgt:
+                case Code.Cgt_Un:
+                case Code.Clt:
+                case Code.Clt_Un:
+                    return ts.Int32;
 
-            return ts.Object;
+                case Code.Ldlen:
+                    return ts.IntPtr;
+                case Code.Sizeof:
+                    return ts.Int32;
+
+                case Code.Ldelem_I1:
+                case Code.Ldelem_U1:
+                case Code.Ldelem_I2:
+                case Code.Ldelem_U2:
+                case Code.Ldelem_I4:
+                case Code.Ldelem_U4:
+                    return ts.Int32;
+                case Code.Ldelem_I8:
+                    return ts.Int64;
+                case Code.Ldelem_I:
+                    return ts.IntPtr;
+                case Code.Ldelem_R4:
+                    return ts.Single;
+                case Code.Ldelem_R8:
+                    return ts.Double;
+                case Code.Ldelem_Ref:
+                    return Top(1) is ArrayType array && array.IsVector ? array.ElementType : UnknownType;
+                case Code.Ldelem_Any:
+                case Code.Ldobj:
+                case Code.Unbox_Any:
+                    return instruction.Operand is TypeReference valueType ? valueType : UnknownType;
+
+                case Code.Ldind_I1:
+                case Code.Ldind_U1:
+                case Code.Ldind_I2:
+                case Code.Ldind_U2:
+                case Code.Ldind_I4:
+                case Code.Ldind_U4:
+                    return ts.Int32;
+                case Code.Ldind_I8:
+                    return ts.Int64;
+                case Code.Ldind_I:
+                    return ts.IntPtr;
+                case Code.Ldind_R4:
+                    return ts.Single;
+                case Code.Ldind_R8:
+                    return ts.Double;
+                case Code.Ldind_Ref:
+                    return Top(0) is ByReferenceType pointee ? pointee.ElementType : UnknownType;
+
+                // isinst/castclass push an object reference: the operand type for a
+                // reference type, a boxed value (typed as object here) for a value type or a
+                // generic parameter.
+                case Code.Isinst:
+                case Code.Castclass:
+                    if (instruction.Operand is TypeReference target)
+                    {
+                        return IsPossiblyValueType(target) ? ts.Object : target;
+                    }
+                    return UnknownType;
+
+                case Code.Localloc:
+                    return new PointerType(ts.Byte);
+
+                // ldftn/ldvirtftn (method pointers), ldtoken, arglist, mkrefany and
+                // refanytype push values the rewriter never needs to spill; if one is live
+                // at a yield point that yield point is skipped.
+                default:
+                    return UnknownType;
+            }
+        }
+
+        private static bool IsPossiblyValueType(TypeReference type)
+        {
+            if (type.IsGenericParameter || type.IsValueType) return true;
+            if (type.IsArray) return false;
+            try
+            {
+                var definition = type.Resolve();
+                return definition == null || definition.IsValueType;
+            }
+            catch (AssemblyResolutionException)
+            {
+                return true;
+            }
         }
 
         /// <summary>
-        /// Result type of a binary numeric/bitwise op given the two operands on top of the
-        /// stack (bottom..top). Follows ECMA-335 III.1.5 binary-numeric promotion for the
-        /// cases the spiller needs: matching operand types pass through; otherwise the
-        /// "wider" operand wins (float &gt; native int &gt; int64 &gt; int32). Falls back to
-        /// the top operand, then int32, when types are unknown.
+        /// Result type of a binary numeric/bitwise op (ECMA-335 III.1.5, table III.2):
+        /// int32 op int32 -> int32, int64 op int64 -> int64, native int with int32 or native
+        /// int -> native int, F op F -> F. Byref arithmetic stays a byref. Anything else is
+        /// not valid IL and is typed <see cref="UnknownType"/>.
         /// </summary>
-        private TypeReference BinaryNumericResult(List<TypeReference> stackBeforePush, TypeSystem ts)
+        private TypeReference BinaryNumericResult(TypeReference a, TypeReference b)
         {
-            if (stackBeforePush.Count < 2)
+            var ts = _method.Module.TypeSystem;
+            var ca = Category(a);
+            var cb = Category(b);
+
+            if (ca == StackCategory.ByRef || ca == StackCategory.Pointer) return a;
+            if (cb == StackCategory.ByRef || cb == StackCategory.Pointer) return b;
+            if (a.FullName == b.FullName && IsPrimitiveNumeric(a.FullName)) return a;
+
+            if (ca == StackCategory.Int32 && cb == StackCategory.Int32) return ts.Int32;
+            if (ca == StackCategory.Int64 && cb == StackCategory.Int64) return ts.Int64;
+            if ((ca == StackCategory.NativeInt && (cb == StackCategory.NativeInt || cb == StackCategory.Int32)) ||
+                (cb == StackCategory.NativeInt && ca == StackCategory.Int32))
             {
-                return stackBeforePush.Count == 1
-                    ? (stackBeforePush[0] ?? ts.Int32)
-                    : ts.Int32;
+                return ts.IntPtr;
+            }
+            if (ca == StackCategory.Float && cb == StackCategory.Float) return ts.Double;
+            return UnknownType;
+        }
+
+        /// <summary>
+        /// The type itself for a primitive numeric type; the stack type for an enum (so a
+        /// negated enum is typed by its underlying stack type); unknown for anything else.
+        /// </summary>
+        private TypeReference StackNormalized(TypeReference type)
+        {
+            if (type != null && IsPrimitiveNumeric(type.FullName)) return type;
+            var ts = _method.Module.TypeSystem;
+            switch (Category(type))
+            {
+                case StackCategory.Int32: return ts.Int32;
+                case StackCategory.Int64: return ts.Int64;
+                case StackCategory.NativeInt: return ts.IntPtr;
+                case StackCategory.Float: return ts.Double;
+                default: return UnknownType;
+            }
+        }
+
+        private static bool IsPrimitiveNumeric(string fullName)
+        {
+            switch (fullName)
+            {
+                case "System.Boolean":
+                case "System.Char":
+                case "System.SByte":
+                case "System.Byte":
+                case "System.Int16":
+                case "System.UInt16":
+                case "System.Int32":
+                case "System.UInt32":
+                case "System.Int64":
+                case "System.UInt64":
+                case "System.IntPtr":
+                case "System.UIntPtr":
+                case "System.Single":
+                case "System.Double":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private enum StackCategory
+        {
+            Int32,
+            Int64,
+            NativeInt,
+            Float,
+            Reference,
+            Value,
+            ByRef,
+            Pointer,
+            GenericParameter,
+            Null,
+            Unknown,
+        }
+
+        /// <summary>
+        /// The ECMA-335 evaluation-stack category of a type (III.1.5): small integers, bool
+        /// and char are int32; enums take their underlying type.
+        /// </summary>
+        private static StackCategory Category(TypeReference type)
+        {
+            if (type == null || ReferenceEquals(type, UnknownType)) return StackCategory.Unknown;
+            if (ReferenceEquals(type, NullType)) return StackCategory.Null;
+            if (type is RequiredModifierType req) return Category(req.ElementType);
+            if (type is OptionalModifierType opt) return Category(opt.ElementType);
+            if (type.IsByReference) return StackCategory.ByRef;
+            if (type.IsPointer || type.IsFunctionPointer) return StackCategory.Pointer;
+            if (type.IsGenericParameter) return StackCategory.GenericParameter;
+
+            switch (type.FullName)
+            {
+                case "System.Boolean":
+                case "System.Char":
+                case "System.SByte":
+                case "System.Byte":
+                case "System.Int16":
+                case "System.UInt16":
+                case "System.Int32":
+                case "System.UInt32":
+                    return StackCategory.Int32;
+                case "System.Int64":
+                case "System.UInt64":
+                    return StackCategory.Int64;
+                case "System.IntPtr":
+                case "System.UIntPtr":
+                    return StackCategory.NativeInt;
+                case "System.Single":
+                case "System.Double":
+                    return StackCategory.Float;
             }
 
-            var b = stackBeforePush[stackBeforePush.Count - 1]; // top
-            var a = stackBeforePush[stackBeforePush.Count - 2]; // below top
-            if (a == null && b == null) return ts.Int32;
-            if (a == null) return b;
-            if (b == null) return a;
-            if (a.FullName == b.FullName) return a;
+            if (type.IsArray) return StackCategory.Reference;
 
-            int Rank(TypeReference t) => t.FullName switch
+            TypeDefinition definition = null;
+            try
             {
-                "System.Double" => 5,
-                "System.Single" => 4,
-                "System.IntPtr" or "System.UIntPtr" => 3,
-                "System.Int64" or "System.UInt64" => 2,
-                _ => 1, // int32 and narrower
-            };
-            return Rank(a) >= Rank(b) ? a : b;
+                definition = type.Resolve();
+            }
+            catch (AssemblyResolutionException)
+            {
+            }
+
+            if (definition != null && definition.IsEnum)
+            {
+                var underlying = definition.Fields.FirstOrDefault(f => !f.IsStatic)?.FieldType;
+                return underlying != null ? Category(underlying) : StackCategory.Unknown;
+            }
+            if (type.IsValueType || (definition != null && definition.IsValueType)) return StackCategory.Value;
+            return StackCategory.Reference;
         }
 
         private TypeReference LocalType(int index)
         {
             var vars = _method.Body.Variables;
-            return index < vars.Count ? vars[index].VariableType : _method.Module.TypeSystem.Object;
+            return index < vars.Count ? vars[index].VariableType : UnknownType;
+        }
+
+        private TypeReference ParameterType(ParameterDefinition parameter)
+        {
+            // 'ldarg 0' in its long form names the implicit 'this' parameter.
+            if (_method.HasThis && (parameter.Index < 0 || parameter == _method.Body.ThisParameter))
+            {
+                return ThisType();
+            }
+            return parameter.ParameterType;
         }
 
         private TypeReference ArgType(int index)
@@ -677,15 +998,31 @@ namespace Prim.Analysis
             // For instance methods, arg0 is 'this'.
             if (_method.HasThis)
             {
-                if (index == 0) return _method.DeclaringType;
+                if (index == 0) return ThisType();
                 int paramIndex = index - 1;
                 return paramIndex < _method.Parameters.Count
                     ? _method.Parameters[paramIndex].ParameterType
-                    : _method.Module.TypeSystem.Object;
+                    : UnknownType;
             }
             return index < _method.Parameters.Count
                 ? _method.Parameters[index].ParameterType
-                : _method.Module.TypeSystem.Object;
+                : UnknownType;
+        }
+
+        /// <summary>
+        /// The type of <c>this</c> inside the method: the declaring type instantiated over its
+        /// own generic parameters (<c>G&lt;T&gt;</c>, not the open <c>G`1</c>, which is not a
+        /// valid type in a signature), and a managed pointer to it for a value type
+        /// (ECMA-335 II.13.3).
+        /// </summary>
+        private TypeReference ThisType()
+        {
+            if (_thisType == null)
+            {
+                var self = TypeSubstitution.SelfType(_method.DeclaringType);
+                _thisType = _method.DeclaringType.IsValueType ? new ByReferenceType(self) : self;
+            }
+            return _thisType;
         }
 
         /// <summary>

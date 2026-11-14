@@ -19,6 +19,7 @@ namespace Prim.Cecil
     ///
     /// <code>
     ///   // PRE-CHECK (outside the protected region):
+    ///   __yieldPoint = -1;                               // not at a resume point
     ///   __context = ScriptContext.EnsureCurrent();
     ///   if (!__context.IsRestoring)                      goto enterTry;
     ///   __frame = __context.FrameChain;
@@ -26,7 +27,8 @@ namespace Prim.Cecil
     ///   if (__frame.MethodToken != methodToken)          goto enterTry;
     ///   __context.FrameChain = __frame.Caller;
     ///   __state = __frame.YieldPointId + 1;
-    ///   // restore locals + spilled eval-stack temps from __frame.Slots
+    ///   // restore locals, written arguments (starg) + spilled eval-stack temps
+    ///   //   from __frame.Slots
     ///   if (__context.FrameChain == null) __context.IsRestoring = false;
     ///   // fall through into the try, where the dispatch switch reads __state
     ///
@@ -40,6 +42,7 @@ namespace Prim.Cecil
     ///       //   EnsureCurrent(); HandleYieldPoint(id)   // may throw SuspendException
     ///       // resume_i:                                  // Nop; resume lands here (after
     ///       //                                            //   the check, before the op)
+    ///       //   __yieldPoint = -1;
     ///       //   reload spilled eval-stack temps and push them back
     ///       //   <suspending op>                          // re-executed once on resume
     ///       //                                            //   (e.g. the back-edge branch)
@@ -49,10 +52,13 @@ namespace Prim.Cecil
     ///       //   __yieldPoint = id;
     ///       //   reload spilled temps; call Callee(...)  // re-executed on resume; the
     ///       //                                            //   callee restores itself
+    ///       //   __yieldPoint = -1;
     ///       ... original 'ret' rewritten to: (stloc __ret;) leave realRet ...
     ///   }
     ///   catch (Prim.Core.SuspendException __ex) {
-    ///       // pack locals + spilled temps into object[] slots
+    ///       // __yieldPoint == -1: the suspension came through a call that is not a
+    ///       //   resume point -> throw InvalidOperationException
+    ///       // pack locals, written arguments + spilled temps into object[] slots
     ///       // __record = FrameCapture.CaptureFrame(methodToken, __yieldPoint, slots, __ex.FrameChain);
     ///       // __ex.FrameChain = __record;
     ///       rethrow;
@@ -135,6 +141,20 @@ namespace Prim.Cecil
         // a yield point.
         private VariableDefinition _suspendingLocal;
 
+        // Arguments the body writes or takes the address of. They are captured after the
+        // locals, in the slot range [_capturableLocalIndices.Count, _stackSlotBase).
+        private List<ParameterDefinition> _capturedArguments = new List<ParameterDefinition>();
+
+        // Results of Prepare: the yield points that will be placed, the type of each of
+        // their spill slots (bottom to top; null for a slot that holds the null literal on
+        // every path, which is re-pushed with ldnull rather than spilled), and the user try
+        // regions that enclose them.
+        private bool _prepared;
+        private List<ILYieldPoint> _yieldPoints;
+        private Dictionary<int, List<TypeReference>> _spillTypes;
+        private List<TryRegion> _tryRegions;
+        private Dictionary<int, List<TryRegion>> _tryChains;
+
         // Cached type/method references
         private TypeReference _scriptContextType;
         private MethodReference _ensureCurrentMethod;
@@ -181,15 +201,33 @@ namespace Prim.Cecil
         }
 
         /// <summary>
-        /// Transforms the method to support continuations.
+        /// Decides, without changing the method, whether it will be transformed: finds its
+        /// yield points, drops those whose live evaluation stack cannot be typed (recorded
+        /// in <see cref="SkippedYieldPoints"/>), and checks that its state can be captured.
+        /// Returns true if <see cref="Transform"/> will rewrite the method. When it returns
+        /// false, <see cref="SkipReason"/> says why, or is null if the method simply has no
+        /// yield point that can be placed.
         /// </summary>
-        public void Transform()
+        public bool Prepare()
         {
+            if (_prepared) return _yieldPoints != null;
+            _prepared = true;
+
             var yieldPoints = _yieldPointIdentifier.FindYieldPoints();
-            SkippedYieldPoints = _yieldPointIdentifier.SkippedYieldPoints
+            var skipped = _yieldPointIdentifier.SkippedYieldPoints
                 .Select(s => s.ToString())
                 .ToList();
-            if (yieldPoints.Count == 0) return;
+            SkippedYieldPoints = skipped;
+            if (yieldPoints.Count == 0) return false;
+
+            // 'this' in a value type's instance method is a managed pointer into the
+            // caller's storage. The struct it points to cannot be captured, and every
+            // transformed caller would have a byref live at the call, so skip.
+            if (_method.HasThis && _method.DeclaringType.IsValueType)
+            {
+                SkipReason = "instance method on a value type: 'this' is a managed pointer whose target cannot be captured";
+                return false;
+            }
 
             // #38: byref / pinned / pointer locals and ref/out parameters cannot be
             // round-tripped through object[] / GetSlot<T>. Rather than emit invalid IL,
@@ -197,18 +235,57 @@ namespace Prim.Cecil
             if (!CanCaptureState(yieldPoints, out var reason))
             {
                 SkipReason = reason;
-                return;
+                return false;
             }
+
+            // Arguments the body writes (starg) or takes the address of (ldarga) are
+            // captured and restored like locals; the rest are supplied again by the caller.
+            if (!FindCapturedArguments(out reason))
+            {
+                SkipReason = reason;
+                return false;
+            }
+
+            // Type every slot to be spilled. A yield point with a slot that cannot be typed
+            // with confidence is not placed: a spill temp of the wrong type is invalid IL.
+            _spillTypes = new Dictionary<int, List<TypeReference>>();
+            var placed = new List<ILYieldPoint>();
+            foreach (var yp in yieldPoints)
+            {
+                var types = SpillTypes(yp, out var untyped);
+                if (types == null)
+                {
+                    skipped.Add($"IL_{yp.Instruction.Offset:X4} ({yp.Kind}): evaluation-stack slot {untyped} could not be typed with confidence");
+                    continue;
+                }
+                _spillTypes[yp.Id] = types;
+                placed.Add(yp);
+            }
+            if (placed.Count == 0) return false;
 
             // User try blocks that enclose a yield point, and each yield point's chain of
             // enclosing try blocks (outermost first). Computed on the original offsets,
             // before any instruction is inserted.
-            var tryRegions = FindTryRegions(yieldPoints, out var tryChains);
-            if (!CanProtectTryRegions(tryRegions, out reason))
+            _tryRegions = FindTryRegions(placed, out _tryChains);
+            if (!CanProtectTryRegions(_tryRegions, out reason))
             {
                 SkipReason = reason;
-                return;
+                return false;
             }
+
+            _yieldPoints = placed;
+            return true;
+        }
+
+        /// <summary>
+        /// Transforms the method to support continuations.
+        /// </summary>
+        public void Transform()
+        {
+            if (!Prepare()) return;
+            var yieldPoints = _yieldPoints;
+            var tryRegions = _tryRegions;
+            var tryChains = _tryChains;
 
             ImportReferences();
 
@@ -225,6 +302,17 @@ namespace Prim.Cecil
             var body = _method.Body;
             var il = body.GetILProcessor();
             var methodToken = GenerateMethodToken();
+
+            // The body is about to be wrapped in a try block, where a tail call is illegal
+            // (ECMA-335 III.2.4). Drop the prefix; the call becomes an ordinary call.
+            foreach (var instruction in body.Instructions)
+            {
+                if (instruction.OpCode.Code == Code.Tail)
+                {
+                    instruction.OpCode = OpCodes.Nop;
+                    instruction.Operand = null;
+                }
+            }
 
             // Record the original local count and which locals are capturable BEFORE
             // injecting synthetic locals.
@@ -395,64 +483,148 @@ namespace Prim.Cecil
 
         // -- spill temp allocation ----------------------------------------------------
 
+        /// <summary>
+        /// Finds the arguments that must be captured: those the body stores to (starg) or
+        /// takes the address of (ldarga), since either can change the argument's value.
+        /// Returns false (with a reason) if the body writes to <c>this</c>.
+        /// </summary>
+        private bool FindCapturedArguments(out string reason)
+        {
+            reason = null;
+            var captured = new HashSet<ParameterDefinition>();
+            foreach (var instruction in _method.Body.Instructions)
+            {
+                switch (instruction.OpCode.Code)
+                {
+                    case Code.Starg:
+                    case Code.Starg_S:
+                    case Code.Ldarga:
+                    case Code.Ldarga_S:
+                        break;
+                    default:
+                        continue;
+                }
+
+                if (!(instruction.Operand is ParameterDefinition p)) continue;
+                if (p.Index < 0 || p == _method.Body.ThisParameter)
+                {
+                    reason = "the method writes to or takes the address of 'this'; state capture unsupported";
+                    return false;
+                }
+                captured.Add(p);
+            }
+
+            _capturedArguments = _method.Parameters.Where(captured.Contains).ToList();
+            return true;
+        }
+
+        /// <summary>
+        /// The type of each slot to spill at <paramref name="yp"/>, bottom to top, or null
+        /// (with the offending slot index in <paramref name="untyped"/>) if one cannot be
+        /// typed with confidence. A slot that holds the null literal on every path is null
+        /// in the list: it is re-pushed with ldnull instead of being spilled.
+        /// </summary>
+        private List<TypeReference> SpillTypes(ILYieldPoint yp, out int untyped)
+        {
+            untyped = -1;
+            var state = yp.StackState;
+            int depth = state?.Depth ?? 0;
+            var argumentTypes = yp.Kind == ILYieldPointKind.ContinuableCall
+                ? CallArgumentTypes((MethodReference)yp.Instruction.Operand)
+                : new List<TypeReference>();
+
+            var types = new List<TypeReference>(depth);
+            for (int i = 0; i < depth; i++)
+            {
+                // Types[] is bottom-to-top. The top slots of a call site are the call's
+                // arguments; their declared types (resolved against the call's generic
+                // instantiation) are exact.
+                int argumentIndex = i - (depth - argumentTypes.Count);
+                var slotType = argumentIndex >= 0 ? argumentTypes[argumentIndex] : null;
+                if (slotType == null)
+                {
+                    slotType = state.Types != null && i < state.Types.Length ? state.Types[i] : null;
+                    if (ReferenceEquals(slotType, StackSimulator.NullType))
+                    {
+                        types.Add(null);
+                        continue;
+                    }
+                }
+
+                if (slotType == null || ReferenceEquals(slotType, StackSimulator.UnknownType) ||
+                    slotType.IsByReference || slotType.IsPointer || slotType.IsFunctionPointer)
+                {
+                    untyped = i;
+                    return null;
+                }
+                types.Add(TypeSubstitution.Substitute(slotType, null, null));
+            }
+            return types;
+        }
+
         private void AllocateSpillTemps(List<ILYieldPoint> yieldPoints)
         {
             _spillTemps = new Dictionary<int, List<VariableDefinition>>();
             _spillSlotBase = new Dictionary<int, int>();
-            _stackSlotBase = _capturableLocalIndices.Count;
+            _stackSlotBase = _capturableLocalIndices.Count + _capturedArguments.Count;
 
             // Assign each yield point its own disjoint trailing slot range so the catch
             // block can pack every yield point's temps without collision.
             int nextBase = _stackSlotBase;
             foreach (var yp in yieldPoints)
             {
-                var state = yp.StackState;
-                int depth = state?.Depth ?? 0;
-                var argumentTypes = yp.Kind == ILYieldPointKind.ContinuableCall
-                    ? CallArgumentTypes((MethodReference)yp.Instruction.Operand)
-                    : new List<TypeReference>();
-                var temps = new List<VariableDefinition>(depth);
-                for (int i = 0; i < depth; i++)
+                var types = _spillTypes[yp.Id];
+                var temps = new List<VariableDefinition>(types.Count);
+                foreach (var slotType in types)
                 {
-                    // Types[] is bottom-to-top; pick the slot's type (widened to object
-                    // where the simulator could not refine it). The top slots of a call
-                    // site are the call's arguments; their declared types are exact.
-                    int argumentIndex = i - (depth - argumentTypes.Count);
-                    var slotType = argumentIndex >= 0 && argumentTypes[argumentIndex] != null
-                        ? argumentTypes[argumentIndex]
-                        : (state.Types != null && i < state.Types.Length && state.Types[i] != null)
-                            ? state.Types[i]
-                            : _module.TypeSystem.Object;
-                    temps.Add(AddLocal(slotType));
+                    // A null entry is a null literal: no temp and no slot.
+                    temps.Add(slotType == null ? null : AddLocal(_module.ImportReference(slotType, _method)));
                 }
                 _spillTemps[yp.Id] = temps;
                 _spillSlotBase[yp.Id] = nextBase;
-                nextBase += depth;
+                nextBase += temps.Count(t => t != null);
             }
             _totalSpillSlots = nextBase - _stackSlotBase;
         }
 
         /// <summary>
         /// Declared types of the operands a call pops (receiver first, then parameters),
-        /// or null for an operand whose declared type is generic and so cannot be named
-        /// here without inflating the signature.
+        /// with the call's generic arguments substituted. The receiver of a value type's
+        /// method is a managed pointer and has no declared type here (null).
         /// </summary>
-        private List<TypeReference> CallArgumentTypes(MethodReference called)
+        private static List<TypeReference> CallArgumentTypes(MethodReference called)
         {
             var types = new List<TypeReference>();
             if (called.HasThis)
             {
-                types.Add(called.DeclaringType.IsValueType || called.DeclaringType.ContainsGenericParameter
-                    ? null
-                    : _module.ImportReference(called.DeclaringType));
+                types.Add(called.DeclaringType.IsValueType ? null : called.DeclaringType);
             }
-            foreach (var p in called.Parameters)
+            for (int i = 0; i < called.Parameters.Count; i++)
             {
-                types.Add(p.ParameterType.ContainsGenericParameter
-                    ? null
-                    : _module.ImportReference(p.ParameterType));
+                types.Add(TypeSubstitution.ParameterType(called, i));
             }
             return types;
+        }
+
+        /// <summary>
+        /// Whether a value of <paramref name="type"/> must be boxed to be stored in an
+        /// <c>object[]</c> slot: value types, and generic parameters or instances that may
+        /// be instantiated or defined as value types (<c>box</c> on a reference type leaves
+        /// it unchanged, so boxing when unsure is safe).
+        /// </summary>
+        private static bool NeedsBox(TypeReference type)
+        {
+            if (type.IsValueType || type.IsGenericParameter) return true;
+            if (type.IsArray) return false;
+            try
+            {
+                var definition = type.Resolve();
+                return definition == null ? type.ContainsGenericParameter : definition.IsValueType;
+            }
+            catch (AssemblyResolutionException)
+            {
+                return true;
+            }
         }
 
         private void ImportReferences()
@@ -506,6 +678,19 @@ namespace Prim.Cecil
                     _callerGetter = TryImport(frameRecordDef.Properties.FirstOrDefault(p => p.Name == "Caller")?.GetMethod);
                 }
             }
+        }
+
+        /// <summary>
+        /// <c>System.InvalidOperationException::.ctor(string)</c>, referenced through the
+        /// module's own core library (System.Runtime, mscorlib, ...).
+        /// </summary>
+        private MethodReference InvalidOperationExceptionCtor()
+        {
+            var type = new TypeReference(
+                "System", "InvalidOperationException", _module, _module.TypeSystem.CoreLibrary);
+            var ctor = new MethodReference(".ctor", _module.TypeSystem.Void, type) { HasThis = true };
+            ctor.Parameters.Add(new ParameterDefinition(_module.TypeSystem.String));
+            return ctor;
         }
 
         private MethodReference TryImport(MethodReference m) => m == null ? null : _module.ImportReference(m);
@@ -577,7 +762,9 @@ namespace Prim.Cecil
 
             foreach (var yp in sortedYieldPoints)
             {
-                var suspendOp = yp.Instruction;
+                // The code goes in front of the suspending op's prefixes, if any: nothing may
+                // separate a prefix from the instruction it modifies.
+                var suspendOp = yp.InsertionPoint ?? yp.Instruction;
                 var cost = costs.TryGetValue(yp.Id, out var c) ? c : 1;
                 var temps = _spillTemps[yp.Id];
 
@@ -588,10 +775,11 @@ namespace Prim.Cecil
 
                 // Spill: drain the live eval stack top-first into temps. After this the
                 // operand stack is empty so the yield check throws from an empty stack,
-                // and the dispatch switch can branch to the resume label.
+                // and the dispatch switch can branch to the resume label. A null literal
+                // is dropped here and re-pushed by the reload.
                 for (int i = temps.Count - 1; i >= 0; i--)
                 {
-                    seq.Add(il.Create(OpCodes.Stloc, temps[i]));
+                    seq.Add(temps[i] == null ? il.Create(OpCodes.Pop) : il.Create(OpCodes.Stloc, temps[i]));
                 }
 
                 if (yp.Kind == ILYieldPointKind.ContinuableCall)
@@ -599,6 +787,10 @@ namespace Prim.Cecil
                     seq.Add(resumeLabel);
                     seq.Add(il.Create(OpCodes.Ldc_I4, yp.Id));
                     seq.Add(il.Create(OpCodes.Stloc, _yieldPointLocal));
+
+                    // Once the callee returns, this frame is no longer at a resume point.
+                    il.InsertAfter(yp.Instruction, il.Create(OpCodes.Stloc, _yieldPointLocal));
+                    il.InsertAfter(yp.Instruction, il.Create(OpCodes.Ldc_I4_M1));
                 }
                 else
                 {
@@ -619,12 +811,16 @@ namespace Prim.Cecil
                     }
 
                     seq.Add(resumeLabel);
+
+                    // Past the check (or resumed here): no longer at a resume point.
+                    seq.Add(il.Create(OpCodes.Ldc_I4_M1));
+                    seq.Add(il.Create(OpCodes.Stloc, _yieldPointLocal));
                 }
 
                 // Reload operands for the suspending op.
                 for (int i = 0; i < temps.Count; i++)
                 {
-                    seq.Add(il.Create(OpCodes.Ldloc, temps[i]));
+                    seq.Add(temps[i] == null ? il.Create(OpCodes.Ldnull) : il.Create(OpCodes.Ldloc, temps[i]));
                 }
 
                 var firstSeq = seq[0];
@@ -1268,24 +1464,52 @@ namespace Prim.Cecil
 
             var instrs = new List<Instruction> { catchStart };
 
-            // Build slots: capturable locals first, then each yield point's spill temps
-            // in its own disjoint trailing range.
-            int slotCount = _stackSlotBase + _totalSpillSlots;
+            // A suspension can only be resumed if this frame is at a yield check or inside
+            // a call to a transformed method; __yieldPoint is -1 everywhere else. Reaching
+            // here with -1 means the suspension came through some other call (a delegate,
+            // an untransformed method, a call in a catch/finally handler). Recording any
+            // yield point would resume in the wrong place, so fail instead.
+            var capture = il.Create(OpCodes.Ldc_I4, _stackSlotBase + _totalSpillSlots);
+            instrs.Add(il.Create(OpCodes.Ldloc, _yieldPointLocal));
+            instrs.Add(il.Create(OpCodes.Ldc_I4_0));
+            instrs.Add(il.Create(OpCodes.Bge, capture));
+            instrs.Add(il.Create(OpCodes.Ldstr,
+                $"Prim: a suspension reached {_method.FullName} through a call that is not a resume point " +
+                "(a delegate, an untransformed method, or a call inside a catch or finally handler), " +
+                "so this frame cannot be resumed correctly."));
+            instrs.Add(il.Create(OpCodes.Newobj, InvalidOperationExceptionCtor()));
+            instrs.Add(il.Create(OpCodes.Throw));
 
+            // Build slots: capturable locals first, then captured arguments, then each yield
+            // point's spill temps in its own disjoint trailing range.
             // new object[slotCount]
-            instrs.Add(il.Create(OpCodes.Ldc_I4, slotCount));
+            instrs.Add(capture);
             instrs.Add(il.Create(OpCodes.Newarr, _module.TypeSystem.Object));
 
-            // Store capturable locals into slots[0.._stackSlotBase).
+            // Store capturable locals into slots[0.._capturableLocalIndices.Count).
             for (int s = 0; s < _capturableLocalIndices.Count; s++)
             {
                 var local = body.Variables[_capturableLocalIndices[s]];
                 instrs.Add(il.Create(OpCodes.Dup));
                 instrs.Add(il.Create(OpCodes.Ldc_I4, s));
                 instrs.Add(il.Create(OpCodes.Ldloc, local));
-                if (local.VariableType.IsValueType)
+                if (NeedsBox(local.VariableType))
                 {
                     instrs.Add(il.Create(OpCodes.Box, local.VariableType));
+                }
+                instrs.Add(il.Create(OpCodes.Stelem_Ref));
+            }
+
+            // Then the captured arguments.
+            for (int a = 0; a < _capturedArguments.Count; a++)
+            {
+                var argument = _capturedArguments[a];
+                instrs.Add(il.Create(OpCodes.Dup));
+                instrs.Add(il.Create(OpCodes.Ldc_I4, _capturableLocalIndices.Count + a));
+                instrs.Add(il.Create(OpCodes.Ldarg, argument));
+                if (NeedsBox(argument.ParameterType))
+                {
+                    instrs.Add(il.Create(OpCodes.Box, argument.ParameterType));
                 }
                 instrs.Add(il.Create(OpCodes.Stelem_Ref));
             }
@@ -1298,7 +1522,7 @@ namespace Prim.Cecil
             // goes to slot _spillSlotBase[Y] + k.
             foreach (var kvp in _spillTemps)
             {
-                var temps = kvp.Value;
+                var temps = kvp.Value.Where(t => t != null).ToList();
                 var ypBase = _spillSlotBase[kvp.Key];
                 for (int k = 0; k < temps.Count; k++)
                 {
@@ -1306,7 +1530,7 @@ namespace Prim.Cecil
                     instrs.Add(il.Create(OpCodes.Dup));
                     instrs.Add(il.Create(OpCodes.Ldc_I4, ypBase + k));
                     instrs.Add(il.Create(OpCodes.Ldloc, temp));
-                    if (temp.VariableType.IsValueType)
+                    if (NeedsBox(temp.VariableType))
                     {
                         instrs.Add(il.Create(OpCodes.Box, temp.VariableType));
                     }
@@ -1369,6 +1593,10 @@ namespace Prim.Cecil
             var body = _method.Body;
             var pre = new List<Instruction>();
 
+            // __yieldPoint = -1: not at a resume point (see BuildCatchBlock).
+            pre.Add(il.Create(OpCodes.Ldc_I4_M1));
+            pre.Add(il.Create(OpCodes.Stloc, _yieldPointLocal));
+
             // __context = ScriptContext.EnsureCurrent();
             pre.Add(il.Create(OpCodes.Call, _ensureCurrentMethod));
             pre.Add(il.Create(OpCodes.Stloc, contextLocal));
@@ -1418,12 +1646,25 @@ namespace Prim.Cecil
                 pre.Add(il.Create(OpCodes.Stloc, local));
             }
 
+            // Restore captured arguments from the slots after the locals.
+            for (int a = 0; a < _capturedArguments.Count; a++)
+            {
+                var argument = _capturedArguments[a];
+                pre.Add(il.Create(OpCodes.Ldloc, frameLocal));
+                pre.Add(il.Create(OpCodes.Callvirt, _slotsGetter));
+                pre.Add(il.Create(OpCodes.Ldc_I4, _capturableLocalIndices.Count + a));
+                var getSlot = new GenericInstanceMethod(_frameCaptureGetSlot);
+                getSlot.GenericArguments.Add(argument.ParameterType);
+                pre.Add(il.Create(OpCodes.Call, getSlot));
+                pre.Add(il.Create(OpCodes.Starg, argument));
+            }
+
             // Restore spilled temps for each yield point from its own disjoint slot range.
             // (Only the active yield point's temps will actually be consumed at its
             // resume label, but restoring all keeps indexing identical to capture.)
             foreach (var kvp in _spillTemps)
             {
-                var temps = kvp.Value;
+                var temps = kvp.Value.Where(t => t != null).ToList();
                 var ypBase = _spillSlotBase[kvp.Key];
                 for (int k = 0; k < temps.Count; k++)
                 {
