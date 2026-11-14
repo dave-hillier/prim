@@ -46,7 +46,10 @@ namespace Prim.Tests.Roslyn
 
         private static string GeneratedText(GeneratorDriverRunResult result)
         {
-            return result.GeneratedTrees.Single().ToString();
+            // Skip the shared replay helper; the continuation code is in one file.
+            return result.GeneratedTrees
+                .Single(t => !t.FilePath.EndsWith("Prim_ContinuationReplay.g.cs", System.StringComparison.Ordinal))
+                .ToString();
         }
 
         private const string Prologue = @"
@@ -154,6 +157,43 @@ namespace TestNs { public partial class Sample {";
             int x = Helper() * 2;
             return x;
         }", expectedCount: 1);
+        }
+
+        [Fact]
+        public void SwitchLabeledCheckedAndBracelessBodies_AreWalkedConsistently()
+        {
+            // Loops and nested calls inside switch sections, checked blocks, labeled
+            // statements, brace-less bodies and deconstructing foreach each get their own
+            // yield point, in source order; calls inside lambdas do not.
+            AssertIdsConsistent(@"
+        [Continuable]
+        public int Helper()
+        {
+            int s = 0;
+            for (int i = 0; i < 2; i++) { s += i; }
+            return s;
+        }
+
+        [Continuable]
+        public int M(int mode)
+        {
+            int total = 0;
+            System.Func<int> f = () => Helper();
+            switch (mode)
+            {
+                case 1:
+                    for (int i = 0; i < 3; i++) total += Helper();
+                    break;
+                default:
+                    total = Helper();
+                    break;
+            }
+            checked { while (total < 10) total++; }
+        again:
+            if (total < 12) total += Helper();
+            foreach (var (a, b) in new[] { (1, 2) }) total += a + b;
+            return total + f();
+        }", expectedCount: 6);
         }
 
         [Fact]
