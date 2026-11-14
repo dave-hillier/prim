@@ -72,5 +72,57 @@ namespace Prim.Tests.Unit
 
         #endregion
 
+        #region Fixed bug: Action-registered entry points could not be resumed
+
+        [Fact]
+        public void Regression_Resume_Works_For_Action_Registered_EntryPoint()
+        {
+            var ran = false;
+            var registry = new EntryPointRegistry();
+            registry.Register(4242, () => { ran = true; });
+            var runner = new ContinuationRunner { EntryPoints = registry };
+
+            var state = new ContinuationState(new HostFrameRecord(4242, 0, new object[0]));
+            var result = runner.Resume(new Continuation<Prim.Core.Unit>(state));
+
+            Assert.True(ran);
+            Assert.True(result.IsCompleted);
+        }
+
+        #endregion
+
+        #region Fixed bug: Resume could not set the instruction budget
+
+        [Fact]
+        public void Regression_Runner_InstructionBudget_Applies_To_Run_And_Resume()
+        {
+            var registry = new EntryPointRegistry();
+            int seenOnResume = -1;
+            registry.Register(4243, () => { seenOnResume = ScriptContext.Current.InstructionBudget; return 1; });
+            var runner = new ContinuationRunner { EntryPoints = registry, InstructionBudget = 7 };
+
+            var state = new ContinuationState(new HostFrameRecord(4243, 0, new object[0]));
+            runner.Resume(new Continuation<int>(state));
+            Assert.Equal(7, seenOnResume);
+
+            int seenOnRun = -1;
+            runner.Run(() => { seenOnRun = ScriptContext.Current.InstructionBudget; return 1; });
+            Assert.Equal(7, seenOnRun);
+        }
+
+        [Fact]
+        public void Regression_Runner_InstructionBudget_Default_Is_Unchanged()
+        {
+            var registry = new EntryPointRegistry();
+            int seen = -1;
+            registry.Register(4244, () => { seen = ScriptContext.Current.InstructionBudget; return 1; });
+            var runner = new ContinuationRunner { EntryPoints = registry };
+
+            runner.Resume(new Continuation<int>(new ContinuationState(new HostFrameRecord(4244, 0, new object[0]))));
+            Assert.Equal(new ScriptContext().InstructionBudget, seen);
+        }
+
+        #endregion
+
     }
 }
