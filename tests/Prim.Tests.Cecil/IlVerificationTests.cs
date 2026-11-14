@@ -334,37 +334,33 @@ namespace Prim.Tests.Cecil
 
             // The local tool is anchored at the repo root, which is an ancestor of the test's
             // base directory; "dotnet ilverify" resolves the manifest by walking up from cwd.
-            var psi = new ProcessStartInfo("dotnet")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                WorkingDirectory = FindRepoRoot(primDir),
-            };
-            foreach (var a in args)
-            {
-                psi.ArgumentList.Add(a);
-            }
-
-            string stdout, stderr;
+            var repoRoot = FindRepoRoot(primDir);
+            string combined;
             try
             {
-                using var proc = Process.Start(psi)!;
-                stdout = proc.StandardOutput.ReadToEnd();
-                stderr = proc.StandardError.ReadToEnd();
-                proc.WaitForExit(60_000);
+                combined = RunDotnet(repoRoot, args);
+
+                // A local tool that has not been restored only prints a hint to run
+                // "dotnet tool restore" (CI does not run it), so restore once and retry.
+                if (combined.Contains("dotnet tool restore", StringComparison.OrdinalIgnoreCase))
+                {
+                    lock (RestoreLock)
+                    {
+                        RunDotnet(repoRoot, new List<string> { "tool", "restore" });
+                    }
+                    combined = RunDotnet(repoRoot, args);
+                }
             }
             catch (Exception ex)
             {
                 return new IlVerifyResult { ToolAvailable = false, Diagnostics = ex.ToString() };
             }
 
-            var combined = stdout + "\n" + stderr;
-
-            // If the tool itself could not be found / restored, treat as unavailable.
-            if (combined.Contains("could not be found", StringComparison.OrdinalIgnoreCase) ||
-                combined.Contains("is not recognized", StringComparison.OrdinalIgnoreCase) ||
-                combined.Contains("No manifest file", StringComparison.OrdinalIgnoreCase))
+            // Only output that is recognisably ilverify's own verdict counts: anything else
+            // (the tool missing, not restored, crashing) would otherwise read as "no errors".
+            bool verdict = combined.Contains("Verified.", StringComparison.Ordinal) ||
+                           combined.Contains("Error(s) Verifying", StringComparison.Ordinal);
+            if (!verdict)
             {
                 return new IlVerifyResult { ToolAvailable = false, Diagnostics = combined };
             }
@@ -377,6 +373,30 @@ namespace Prim.Tests.Cecil
                 .ToList();
 
             return new IlVerifyResult { ToolAvailable = true, Errors = errors, Diagnostics = combined };
+        }
+
+        private static readonly object RestoreLock = new object();
+
+        private static string RunDotnet(string workingDirectory, List<string> args)
+        {
+            var psi = new ProcessStartInfo("dotnet")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                WorkingDirectory = workingDirectory,
+            };
+            foreach (var a in args)
+            {
+                psi.ArgumentList.Add(a);
+            }
+
+            using var proc = Process.Start(psi)!;
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            var stdout = proc.StandardOutput.ReadToEnd();
+            var stderr = stderrTask.Result;
+            proc.WaitForExit(120_000);
+            return stdout + "\n" + stderr;
         }
 
         private static string FindRepoRoot(string start)
