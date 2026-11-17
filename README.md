@@ -1,24 +1,22 @@
 # Prim
 
-A .NET continuation framework enabling suspend/resume of program execution with serializable state.
+Prim suspends and resumes .NET program execution and can serialize the suspended state.
 
 ## Why Serializable Continuations?
 
-Most runtimes support some form of suspension (coroutines, async/await, green threads), but the captured state typically exists only in memory. **Serializable continuations** let you persist that state to disk or transmit it to another machine.
+Most runtimes support some form of suspension (coroutines, async/await, green threads), but the suspended state exists only in memory. A serializable continuation can be written to disk or sent to another machine. Uses:
 
-This enables patterns that are otherwise difficult:
+- **Migration**: move a running computation to another server. The code is not aware that it moved.
+- **Durable execution**: checkpoint long-running work and resume after a crash, without an effect log.
+- **Cooperative multithreading for untrusted code**: run many scripts on one thread, with yield points the scripts cannot avoid.
 
-- **Transparent migration** - Move running computations between servers without the code knowing it moved
-- **Durable execution** - Checkpoint long-running work and resume after crashes, without requiring deterministic replay
-- **Cooperative multithreading for untrusted code** - Run many scripts on one thread with guaranteed yield points
-
-Prim achieves this on stock .NET runtimes through program transformation. No runtime modifications required.
+Prim does this by transforming the program. It runs on unmodified .NET runtimes.
 
 ## Background
 
-The techniques in Prim were originally developed for Second Life's Mono integration (2007-2008), where user scripts needed to migrate seamlessly between simulator processes. A script counting to a million shouldn't restart from zero just because its object crossed a region boundary.
+Prim reimplements the approach used by Second Life's Mono script engine (in production from 2008), where user scripts had to migrate between simulator processes mid-execution. A script counting to a million must not restart from zero because its object crossed a region boundary. Second Life's rewriter saved each frame and returned; Prim unwinds with an exception instead. Both designs follow Java mobile-agent systems published from 1998 onward.
 
-For the full technical details, design rationale, and comparison with related systems (WasmFX, Espresso, Project Loom), see the [whitepaper](docs/whitepaper.md).
+The [whitepaper](docs/whitepaper.md) describes the design and compares it with related systems (WasmFX, Espresso, Project Loom). [docs/research](docs/research/README.md) holds the prior-art survey and its source notes.
 
 ## What Prim Does
 
@@ -56,7 +54,7 @@ Prim/
 │   ├── Generator/           # Yield/resume demonstration (manual pattern)
 │   └── MigrationDemo/       # Suspend to a file, resume in another process
 ├── benchmarks/              # BenchmarkDotNet suite
-└── docs/                    # Whitepaper, TODO, blog/ (draft post), research/ (prior art, WasmFX notes)
+└── docs/                    # Whitepaper, TODO, blog/ (draft post), research/ (prior-art survey and notes)
 ```
 
 ## Quick Start

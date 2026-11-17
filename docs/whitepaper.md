@@ -22,7 +22,7 @@ Most modern continuation implementations produce in-memory representations: opaq
 
 GraalVM's Espresso [5] achieves serializable continuations for Java, but relies on Truffle's ability to materialize interpreter frames as heap objects. This paper addresses a different setting: achieving the same capability on a runtime whose JIT-compiled frames cannot be introspected, and which we cannot modify.
 
-The key insight is that while we cannot *read* the stack, we can *transform* the code to make stack state explicit. By injecting capture and restore logic at compile time or post-compilation, we create programs that can externalize their own execution state on demand.
+We cannot read the stack, but we can transform the code so that it saves and restores its own state. The transformation injects capture and restore logic into each method, either at compile time or after compilation.
 
 ### 1.1 Contributions
 
@@ -38,7 +38,7 @@ The key insight is that while we cannot *read* the stack, we can *transform* the
 
 These techniques were used in Linden Lab's Second Life [14], where user scripts—actor-like programs [21] attached to objects in the virtual world—needed to migrate transparently between simulator processes. Linden Lab described its Mono plans publicly from 2005, presented the microthreading work at Lang.NET in 2006 [44], and switched the main grid to Mono on 29 August 2008 [45]; the author worked on the script engine in 2007-2008. The assembly rewriter was built with RAIL and was influenced by the Java mobile-agent systems Brakes [25] and JavaGoX [26]. The simulator source was never published, and the present paper describes the design from the author's recollection.
 
-The same ideas were developed repeatedly and independently. Java mobile-agent systems captured thread state by source or bytecode transformation from 1998 onward [23, 24, 25, 26, 27, 28]. Pettyjohn et al. showed exception-based capture on MSIL/.NET in 2005 [29], and Loitsch carried it to JavaScript in 2007 [30]. VM-level approaches followed, such as Stadler et al.'s lazy continuations for HotSpot [6], which copy frames inside the virtual machine rather than transforming the program. That the same pattern keeps being rediscovered suggests it is fundamental rather than incidental; what remains rare is making the captured state serializable, validating it, and running it in production.
+The same ideas were developed repeatedly and independently. Java mobile-agent systems captured thread state by source or bytecode transformation from 1998 onward [23, 24, 25, 26, 27, 28]. Pettyjohn et al. showed exception-based capture on MSIL/.NET in 2005 [29], and Loitsch carried it to JavaScript in 2007 [30]. VM-level approaches followed, such as Stadler et al.'s lazy continuations for HotSpot [6], which copy frames inside the virtual machine rather than transforming the program. The pattern has been published independently several times. Fewer systems also make the captured state serializable, validate it, or run in production.
 
 ---
 
@@ -48,7 +48,7 @@ The same ideas were developed repeatedly and independently. Java mobile-agent sy
 
 Managed runtimes like the CLR and JVM do not expose their call stacks programmatically. You cannot ask "what are the current local variables in the caller's frame?" The stack is an implementation detail managed by the runtime and JIT compiler.
 
-This is problematic for continuation capture. A continuation must include:
+A continuation must include:
 
 - The program counter (where to resume)
 - Local variables for each frame
@@ -65,7 +65,7 @@ Two standard approaches exist for adding continuations to languages without nati
 
 **State machine transformation**, used by C#'s async/await [8], converts methods into classes where locals become fields and the PC becomes a state variable. This works well for compiler-integrated patterns but requires language-level support and is typically restricted to specific constructs (async methods).
 
-We want a more surgical approach: transform only what's necessary to enable capture, preserve normal calling conventions, and work at the bytecode level without compiler cooperation. (As §4.2 shows, the restore dispatch ends up borrowing the *shape* of a state machine within each method, but locals stay on the stack and calling conventions are unchanged.)
+Prim instead transforms only what capture needs, keeps normal calling conventions, and works on bytecode without compiler cooperation. (As §4.2 shows, the restore dispatch ends up borrowing the *shape* of a state machine within each method, but locals stay on the stack and calling conventions are unchanged.)
 
 ---
 
@@ -80,13 +80,13 @@ Prim uses exceptions. When we want to capture:
 3. The exception carries a growing chain of frame records
 4. At the stack base, we catch the exception and extract the complete state
 
-This has several desirable properties:
+This has three properties:
 
 **Localized logic**: Each method has one catch block that knows only about its own locals, instead of a save sequence at every yield point and a flag check after every call. No global coordinator needs to understand all possible frame shapes.
 
 **No cost on the normal return path**: Return-based unwinding checks a flag after every call to a transformable method. The exception-based style instead registers a handler, which on the CLR costs nothing until an exception is thrown.
 
-**Correct unwinding order**: The exception mechanism naturally visits frames from innermost to outermost, building the chain in the right order for later restoration.
+**Correct unwinding order**: The exception visits frames from innermost to outermost, which builds the chain in the order restoration needs.
 
 Both styles capture lazily: capture code runs only when suspending [34]. The price of exceptions is the throw itself. Kilim's authors rejected exceptions as almost two orders of magnitude more expensive, partly because a throw clears the operand stack [31]. Prim avoids the second problem by spilling the evaluation stack before every yield check (§4.4). The first is a question of measurement: throws happen once per frame per suspension, not on the normal path, so the cost matters only when suspension is frequent.
 
@@ -232,7 +232,7 @@ The same rule constrains the rest of the rewrite. A `ret` is not allowed inside 
 
 ### 4.3 Analysis Requirements
 
-The transformation requires static analysis of each method [15, 16]:
+The transformation needs three analyses of each method [15, 16]:
 
 **Control flow graph**: Identify basic blocks, branch targets, and exception handler regions. Yield points are placed at loop back-edges (branches to earlier addresses) and, optionally, at calls.
 
@@ -306,7 +306,7 @@ if (context.InstructionBudget <= 0)
 
 COST is the estimated cost of instructions since the last check. The budget is set by the scheduler before each execution slice; when exhausted, the script yields.
 
-The counter keeps the per-yield-point check entirely in managed code, while the timer remains the authority on scheduling. The cost is predictable: a decrement and comparison at each yield point. The counter also provides natural fairness accounting: scripts that do more work consume more budget.
+The counter keeps the per-yield-point check entirely in managed code, while the timer remains the authority on scheduling. The cost is predictable: a decrement and comparison at each yield point. The counter also gives fairness accounting: scripts that do more work consume more budget.
 
 A host that doesn't face the boundary-crossing cost can use either mechanism alone. Pure polling (§5.3) is simpler, and pure counting gives more precise accounting. Wasmtime later offered the same choice to WebAssembly hosts: deterministic "fuel" counting, or cheaper "epoch" interruption driven by wall-clock time [43].
 
@@ -371,7 +371,7 @@ bar's prologue:
   - Continue execution...
 ```
 
-The re-executed calls rebuild the stack naturally. The entry point can be supplied by the host, or looked up from the method token of the outermost frame through a registry of entry points.
+The re-executed calls rebuild the stack. The entry point can be supplied by the host, or looked up from the method token of the outermost frame through a registry of entry points.
 
 ### 6.2 Return Value Handling
 
@@ -393,7 +393,7 @@ This is a narrower form of replay than the one used by durable execution systems
 
 ## 7. Serialization
 
-The frame chain is a heap data structure that can be serialized straightforwardly.
+The frame chain is an ordinary heap data structure and can be serialized.
 
 ### 7.1 Structure
 
@@ -433,7 +433,7 @@ The original system used a custom binary format for compactness. Modern alternat
 - **JSON**: Human-readable, useful for debugging
 - **Protocol Buffers**: Schema-based, good for versioning
 
-The choice is engineering, not fundamental. The key requirements are preserving the object graph structure and the exact slot types.
+Any of these works. The format must preserve the object graph structure and the exact slot types.
 
 The caller chain is recursive, so a naive serializer recurses once per frame. Deserialization must bound the depth, or a maliciously deep chain overflows the stack before validation can reject it.
 
@@ -441,7 +441,7 @@ The caller chain is recursive, so a naive serializer recurses once per frame. De
 
 ## 8. Security Model
 
-Deserializing untrusted continuation state is dangerous. As Espresso's documentation warns: "Deserializing a continuation supplied by an attacker will allow complete takeover of the JVM" [5]. This is not hypothetical. A 2025 write-up [41] forged Espresso frame records with an attacker-chosen method, bytecode index and locals, resumed them into JDK code, and reached `Runtime.exec`. The general problem of deserialization gadgets is well documented [39, 40].
+Deserializing untrusted continuation state is dangerous. As Espresso's documentation warns: "Deserializing a continuation supplied by an attacker will allow complete takeover of the JVM" [5]. A 2025 write-up [41] forged Espresso frame records with an attacker-chosen method, bytecode index and locals, resumed them into JDK code, and reached `Runtime.exec`. The general problem of deserialization gadgets is well documented [39, 40].
 
 The idea of checking migrating state on arrival is older. Farmer, Guttman and Swarup proposed *state appraisal* for mobile agents in 1996: functions that check invariants of an agent's state before a host grants it privileges [38]. The checks below apply the same idea, with the rules taken from the transformation itself.
 
@@ -466,7 +466,7 @@ Before resuming a deserialized continuation:
 
 **Type compatibility**: Each slot value must be type-compatible with what that slot holds at that yield point. A slot expecting `int` cannot contain a `string`.
 
-**Object type whitelist**: Reference types in slots must be from an allowed set, matched by assembly-qualified name so that a type in another assembly cannot impersonate an allowed one by sharing its full name. No deserializing `System.Diagnostics.Process` in a sandbox.
+**Object type whitelist**: Reference types in slots must be from an allowed set, matched by assembly-qualified name so that a type in another assembly cannot impersonate an allowed one by sharing its full name. A sandbox must not allow `System.Diagnostics.Process`, for example.
 
 **Resource limits**: Stack depth and slot counts must be bounded.
 
@@ -502,7 +502,7 @@ Pettyjohn et al. [29] derived the same technique from stack inspection and demon
 
 Espresso implements Java on Truffle, an interpreter framework. Truffle provides frame materialization—converting stack frames to heap objects—as a built-in capability [10]. Espresso's continuation API builds on this.
 
-The key difference: Espresso operates *within* an interpreter framework that controls execution. Our approach operates *on* code that will be JIT-compiled by a runtime we don't control. We must anticipate and inject everything at transformation time.
+Espresso runs inside an interpreter framework that controls execution. Prim transforms code that a runtime it does not control will JIT-compile, so everything capture and restore need must be injected at transformation time.
 
 Espresso also captures by throwing: each frame is copied into a `HostFrameRecord`, and the exception is rethrown. Prim's frame record uses the same name. Espresso's continuations are serializable, but its documentation warns against resuming state from anywhere else (§8).
 
@@ -527,7 +527,7 @@ Asyncify saves state into a buffer in linear memory. The buffer is ordinary byte
 
 ### 9.5 Project Loom and Other Runtime Continuations
 
-Loom [4] adds virtual threads to Java. Internally, virtual threads use continuations—when a virtual thread blocks, its continuation is captured and the carrier thread runs other work. Loom's continuations are internal implementation details, not a public API, and they're not serializable. The same holds for OCaml 5's effect handlers [20] and for Mono's `Mono.Tasklets`, which copy stacks inside the runtime. Loom solves efficient concurrency, not state persistence.
+Loom [4] adds virtual threads to Java. Internally, virtual threads use continuations—when a virtual thread blocks, its continuation is captured and the carrier thread runs other work. Loom's continuations are internal implementation details, not a public API, and they're not serializable. The same holds for OCaml 5's effect handlers [20] and for Mono's `Mono.Tasklets`, which copy stacks inside the runtime. Loom's goal is cheap concurrency, not persistence.
 
 ### 9.6 Durable Execution
 
@@ -543,7 +543,7 @@ The transformation adds:
 
 - **Code size**: Yield checks, a capture catch block, a restore prologue and dispatch, plus spill code at yield points with a non-empty stack. The increase grows with yield point density and with the number of locals, since the capture block and prologue each touch every captured local.
 
-- **Normal execution**: Yield point checks (flag test + branch). Nanoseconds per check. For tight loops this can be significant; for typical application code it's negligible.
+- **Normal execution**: Yield point checks (flag test + branch). The cost is largest in tight loops, where the check is a larger share of each iteration.
 
 - **Suspension**: Exception throw, catch blocks execute, frame records allocated. Cost grows linearly with stack depth.
 
@@ -581,9 +581,9 @@ Prim is an open-source reimplementation of these techniques for .NET, and its tw
 
 ## 11. Conclusion
 
-Serializable continuations on JIT-compiled managed runtimes are achievable through bytecode transformation. The core techniques—exception-based stack traversal, yield point injection, and restore dispatch—are straightforward once understood. Getting the details right, however, requires careful handling of stack simulation, protected-region rules, exception handler interaction, type fidelity, and security validation.
+Serializable continuations can be implemented on JIT-compiled managed runtimes by bytecode transformation. The techniques are exception-based stack traversal, yield point injection and restore dispatch. A working implementation also needs stack simulation, compliance with the protected-region rules, handling of user exception handlers, exact slot types, and validation of state.
 
-The same pattern has been rediscovered at least five times since 1998—for Java mobile agents, Scheme on .NET, JavaScript, WebAssembly and Espresso—which suggests it is a fundamental solution to continuation capture on opaque-stack runtimes. What remains rare is combining it with serialization, validation of state from outside, and production use.
+The same pattern has been published at least five times since 1998: for Java mobile agents, Scheme on .NET, JavaScript, WebAssembly and Espresso. Few of those systems combine it with serialization, validation of state from outside, and production use.
 
 That combination matters more, not less, as runtimes add native continuations. WasmFX, Loom, OCaml's effect handlers [20] and .NET's runtime-level async are all opaque and one-shot; Espresso, the main serializable design, has been shown exploitable through exactly the frame fields that §8 validates; and industrial durable execution replays effect logs to avoid serializing stacks at all. When persistence or migration is required, program transformation remains a practical approach.
 
