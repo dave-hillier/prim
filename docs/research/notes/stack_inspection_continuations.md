@@ -1,128 +1,111 @@
-# Continuations from stack inspection / exception-based capture (non-JVM-migration literature)
+# Continuations by exception-based capture outside the Java migration literature
 
-Scope note: positioning for a whitepaper claiming as contribution #1 "exception-based stack traversal for capture" (Second Life, Mono/CLR, 2007-2008). Citation metadata below was verified against the Crossref API (api.crossref.org) unless flagged. Full texts of Pettyjohn et al. 2005, Loitsch 2007, Baxter et al. 2018 (Stopify) and McCarthy 2009 were read directly; quotes are from those PDFs.
+This note covers Pettyjohn et al. (2005) and the work around it: its sources, its descendants in JavaScript, Scheme implementations on the JVM and CLR, and other systems that serialize continuations. The Java thread-migration systems are in [jvm_clr_migration_prior_art.md](jvm_clr_migration_prior_art.md).
 
-## 1. Pettyjohn, Clements, Marshall, Krishnamurthi, Felleisen, "Continuations from generalized stack inspection" (ICFP 2005)
+## How the claims were checked
 
-### Takeaway
-This is the closest and most important prior art: a published, formally justified transformation (ANF + per-call-site exception handlers) that captures continuations on the **.NET CLR (MSIL, presented in C#)** by throwing an exception so that each frame's handler saves its state into a heap list while the stack unwinds, then restores by re-invoking saved frame objects. It predates the Second Life work by ~2 years and its CLR prototype is essentially the "exception-based stack traversal for capture" mechanism. Serializability is demonstrated in the companion PLT Web-server prototype (not in the CLR prototype).
+- **September 2026.** Citation metadata was checked against Crossref. The full texts of Pettyjohn et al. 2005, Loitsch 2007, Baxter et al. 2018 (Stopify) and McCarthy 2009 were read, and quotations from them come from the PDFs.
+- **November 2026.** Open items were re-checked by web search. No page could be fetched directly, so each result rests on a search-result summary. These are marked "(search)".
 
-### Cited Findings
-- **Citation (verified):** Greg Pettyjohn, John Clements, Joe Marshall, Shriram Krishnamurthi, Matthias Felleisen. "Continuations from generalized stack inspection." Proc. 10th ACM SIGPLAN International Conference on Functional Programming (ICFP '05), Tallinn, pp. 216-227, 2005. DOI 10.1145/1086365.1086393; also ACM SIGPLAN Notices 40(9), DOI 10.1145/1090189.1086393 — [Crossref/ACM DL](https://doi.org/10.1145/1086365.1086393); [author PDF](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Abstract: "Implementing first-class continuations can pose a challenge if the target machine makes no provisions for accessing and re-installing the run-time stack... we show how to use our new technique to copy and reconstitute the stack on MSIL.Net using exception handlers. This establishes that Scheme's first-class continuations can exist on non-cooperative virtual machines." — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Motivation explicitly names both JVM and CLR: "these machines do not provide instructions for installing and saving the run-time stack. Usually, Scheme-on-VM implementors give up on first-class continuations [JScheme, Bigloo.NET], or they allocate the control stack in the heap of the machine [SISC]." They also argue heap-allocated stacks hide the stack from debuggers, profilers and security managers. — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Theoretical model: translate call/cc into a language with continuation marks (PLT Scheme's `with-continuation-mark` / `current-continuation-marks`), i.e. "generalized stack inspection"; source is put in a modified A-normal form. "The resulting transformation is less radical than CPS, and it is thus natural to run the resulting program on the natively available stack." — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **CLR mechanism (Sec. 4.2, "Scheme and MSIL"):** "marking a continuation (w-c-m) corresponds to the installation of an exception handler; the inspection of the continuation marks (c-c-m) can be accomplished by raising an exception, thus transferring control to code that writes a representation of the mark to the heap as the stack unwinds." Steps: (1) convert to ANF, introducing locals for intermediate results; (2) "wrap each function call with an exception handler"; (3) capture throws a `SaveContinuation` exception "that only the newly inserted handlers know about and catch"; each handler does `sce.Extend(new fact_frame0(x)); throw;` — i.e. it allocates a frame object holding live locals and re-throws; (4) a top-level handler around the whole program resumes with the captured continuation. — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Lazy representation: "In the C#-implementation, the analogous closures are only created as the stack is unwound by the special exception. In effect, the representation is created lazily." — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **Cost claim (qualitative only):** "a program that does not use first-class continuations pays only for the establishment of exception handlers around (non-tail) function calls. Fortunately, the implementors of the virtual machine assume that exception handlers are established with some frequency and have therefore made this a reasonably inexpensive operation." No benchmark numbers are reported in the paper (I found no benchmark/performance table in the text). — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **Restore mechanism (Fig. 14, `Resume(Context frame, ContextList moreRecentFrames)`):** each saved frame recursively reloads the more-recent frames, then calls `frame.Invoke(returnValue)` inside a try/catch whose handler does `sce.AppendSharedContext(frame.OlderContext); throw;` — so a second capture within a restored context shares (does not duplicate) the older saved frames. "Pending chains of calls to resume are not protected by an exception handler so that they aren't duplicated by the capture." — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Mixed transformed/untransformed code: they introduce "safety marks" as "a partial solution" for frames of non-transformed code on the stack. — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **Serializability:** in the PLT Web-server prototype ("persistent-web-interaction.ss"), `send/suspend` "collects the continuation marks and serializes them," with `send/suspend/url` (continuation serialized into the URL) and `send/suspend/hidden` (hidden form field), so servlets can run under stateless CGI servers such as Apache. — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- Related work acknowledged by Pettyjohn et al.: Sekiguchi, Sakamoto & Yonezawa (2001) and Tao (PhD, Utah, 2001) already used "exception handling to construct continuation values as the stack unwinds" (Java/C++); Schinz & Odersky's JVM tail-call trampolines use "a small portion of our transformation." — [paper](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
+## 1. Pettyjohn et al., ICFP 2005
 
-### Inferences
-- The Second Life (2007-2008) "exception-based stack traversal for capture" on Mono/CLR is anticipated in its core mechanism by Pettyjohn et al. 2005 (explicitly on MSIL/.NET) and, for Java/C++, by Sekiguchi et al. 2001 and Tao 2001. A novelty claim for the capture mechanism per se is not defensible; claims would need to rest on engineering specifics (e.g., working at CIL-bytecode level on Mono for an untrusted-script sandbox, serializing to disk/network for cross-server migration of user scripts, production scale, handling of CLR features the 2005 C# sketch does not address such as `finally`, value types, generics, verifiability).
-- The 2005 CLR prototype is described as a prototype with a small example (fact); it does not claim serialization of the CLR continuation, so "serializable + CLR + production" remains a possible differentiator.
+The paper gives a transformation that captures continuations on .NET. The program is put in A-normal form and each call is wrapped in an exception handler. Capture throws an exception; each handler saves its frame's live locals into a heap object and rethrows. Restore calls the saved frame objects again. The paper presents this in C# on a factorial example. It predates Second Life's production deployment by three years and its first public presentation by one.
 
-### Gaps
-- No performance numbers exist in the paper; I could not find a separate evaluation of the CLR prototype.
-- Whether the CLR prototype was ever released as code: not found.
+The .NET prototype does not serialize continuations. Serialization appears in a second prototype in the same paper, for the PLT Scheme web server.
 
-## 2. Earlier roots and adjacent foundations
+Sources:
 
-### Takeaway
-The exception-unwinding capture idea originates in the thread-migration/checkpointing literature (Sekiguchi et al. 2001; Tao 2001), which the whitepaper's JVM-migration section presumably covers; the stack-inspection theory comes from Clements & Felleisen and Clements' dissertation. Tolmach & Appel's SML debugger is a related "instrument the source to get stack access" ancestor, but not exception-based.
+- Greg Pettyjohn, John Clements, Joe Marshall, Shriram Krishnamurthi, Matthias Felleisen. "Continuations from Generalized Stack Inspection." ICFP 2005, Tallinn, ACM, pp. 216–227. [doi:10.1145/1086365.1086393](https://doi.org/10.1145/1086365.1086393). [PDF](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
+- Abstract: "we show how to use our new technique to copy and reconstitute the stack on MSIL.Net using exception handlers. This establishes that Scheme's first-class continuations can exist on non-cooperative virtual machines."
+- Motivation: "these machines do not provide instructions for installing and saving the run-time stack. Usually, Scheme-on-VM implementors give up on first-class continuations [JScheme, Bigloo.NET], or they allocate the control stack in the heap of the machine [SISC]."
+- Model: `call/cc` is translated into a language with continuation marks. "The resulting transformation is less radical than CPS, and it is thus natural to run the resulting program on the natively available stack."
+- .NET mechanism (section 4.2): "marking a continuation (w-c-m) corresponds to the installation of an exception handler; the inspection of the continuation marks (c-c-m) can be accomplished by raising an exception, thus transferring control to code that writes a representation of the mark to the heap as the stack unwinds." Capture throws a `SaveContinuation` exception "that only the newly inserted handlers know about and catch". Each handler runs `sce.Extend(new fact_frame0(x)); throw;`.
+- Capture is lazy: "the analogous closures are only created as the stack is unwound by the special exception."
+- Cost, stated without measurements: "a program that does not use first-class continuations pays only for the establishment of exception handlers around (non-tail) function calls." The paper has no benchmark table.
+- Restore (figure 14): each saved frame reloads the more recent frames, then calls `frame.Invoke(returnValue)` inside a `try`/`catch` whose handler appends the older saved frames and rethrows. A second capture inside a restored context therefore shares the older frames.
+- Untransformed frames on the stack: the paper adds "safety marks" as "a partial solution".
+- Serialization: in the web-server prototype, `send/suspend` "collects the continuation marks and serializes them" into a URL or hidden form field.
+- Its related-work section says Sekiguchi et al. (2001) and Tao (2001) already used "exception handling to construct continuation values as the stack unwinds".
 
-### Cited Findings
-- **Sekiguchi, Sakamoto, Yonezawa (verified):** "Portable Implementation of Continuation Operators in Imperative Languages by Exception Handling." In *Advances in Exception Handling Techniques*, LNCS 2022, pp. 217-233, Springer, 2001. DOI 10.1007/3-540-45407-1_14 — [Crossref/Springer](https://doi.org/10.1007/3-540-45407-1_14)
-  - Per Pettyjohn et al.: implements partial continuations (Gunter et al.'s `cupto`/`set`) in Java and C++ for checkpointing and thread migration; translation defined on bytecode; includes a fragmentation step analogous to A-normalization; resumption uses an extra parameter carrying control state (≈ inlined resume); no solution for untransformed frames; no theory. — [Pettyjohn et al. 2005](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **Tao, W.** "A portable mechanism for thread persistence and migration." PhD thesis, University of Utah, 2001 (citation as given in Pettyjohn et al.; not independently verified). Uses Java's exception mechanism, source and bytecode versions, "shutdown" and "restart" versions of code. — [Pettyjohn et al. 2005](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **Clements & Felleisen (verified):** "A tail-recursive machine with stack inspection." ACM TOPLAS 26(6), pp. 1029-1052, Nov 2004. DOI 10.1145/1034774.1034778 — [Crossref](https://doi.org/10.1145/1034774.1034778). Earlier conference version: "A Tail-Recursive Semantics for Stack Inspections," ESOP 2003, LNCS pp. 22-37, DOI 10.1007/3-540-36575-3_3 — [Crossref](https://doi.org/10.1007/3-540-36575-3_3)
-- **Clements dissertation:** John Clements, "Portable and high-level access to the stack with Continuation Marks," PhD dissertation, College of Computer and Information Science, Northeastern University, February 2006 (no DOI). Thesis: "lightweight stack inspection improves the implementation of intensional programming tools and programming language extensions." — [PDF](https://www2.ccs.neu.edu/racket/pubs/dissertation-clements.pdf); [Semantic Scholar](https://www.semanticscholar.org/paper/Portable-and-high-level-access-to-the-stack-with-Clements/260bb3b8ecc406850c7c6a62d0f57c04501bda8f) (metadata via search summary; PDF not read in full)
-- **Clements et al. 2008, "Implementing Continuation Marks in JavaScript"** (Scheme Workshop 2008) — cited by McCarthy 2009 as showing marks can be implemented in JavaScript — [McCarthy 2009 PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf); [ResearchGate listing](https://www.researchgate.net/publication/45523405_Implementing_Continuation_Marks_in_Javascript) (full author list/pages not verified)
-- **Tolmach & Appel (verified metadata):** "Debugging Standard ML without reverse engineering," Proc. 1990 ACM Conf. on LISP and Functional Programming, pp. 1-12, DOI 10.1145/91556.91564 — [Crossref](https://doi.org/10.1145/91556.91564); journal version "A Debugger for Standard ML," J. Functional Programming 5(2), pp. 155-200, 1995, DOI 10.1017/S0956796800001313 — [Crossref](https://doi.org/10.1017/s0956796800001313); also "Debuggable concurrency extensions for Standard ML," ACM/ONR Workshop on Parallel and Distributed Debugging 1991, pp. 120-131, DOI 10.1145/122759.122770 — [Crossref](https://doi.org/10.1145/122759.122770)
+Related material found in November (search):
 
-### Inferences
-- Tolmach & Appel is relevant as the "instrument source so a high-level tool can see the stack without runtime support" ancestor (it is Clements' dissertation lineage), but to my knowledge it instruments code to record events and uses SML/NJ's native first-class continuations for time travel rather than exception-based capture (UNVERIFIED — mechanism not read in this pass).
+- A PLT-hosted page, "A Technique for Implementing First-Class Continuations", has C# code for the technique (`ContinuationFrame`, `SaveContinuationException`). A later report attributes it to Joe Marshall. [Page](https://www2.ccs.neu.edu/racket/pubs/stackhack4.html)
+- Joe Marshall, "An Unexceptional Implementation of First-Class Continuations", International Lisp Conference 2009, pp. 36–40. Same goal, by a co-author of the 2005 paper, but "use of the exception handler is avoided". Its abstract says "measurements demonstrate acceptable performance". [Abstract](https://research.google/pubs/an-unexceptional-implementation-of-first-class-continuations/)
 
-### Gaps
-- Tao 2001 thesis metadata not independently verified (Utah tech report / thesis number not found).
-- Sekiguchi et al. and Tao are the "JVM-migration" branch; the coordinator said to exclude that literature, so details here come only via Pettyjohn/Loitsch summaries.
+Not verified:
 
-## 3. JavaScript: Loitsch (2007), Scm2Js, Stopify (2018), Doppio, Whalesong
+- No measurements of the 2005 .NET prototype were found.
 
-### Takeaway
-Loitsch (2007) independently adapted the Tao/Sekiguchi/Pettyjohn exception-based technique to JavaScript (Scm2Js / Hop) including full call/cc with closures and mutation, reporting 1.0x-4.1x slowdowns on Firefox and up to ~17x on Opera from instrumentation alone. Stopify (PLDI 2018) generalizes this with three selectable strategies (checked-return, exceptional, eager/shadow-stack). Neither serializes continuations. Doppio and Whalesong avoid the issue by running interpreters with their own heap stacks.
+## 2. Sources of the technique
 
-### Cited Findings
-- **Loitsch citation:** Florian Loitsch, "Exceptional Continuations in JavaScript," Proc. 2007 Workshop on Scheme and Functional Programming (Freiburg), Université Laval Technical Report DIUL-RT-0701, pp. 37-45 (start page 37 and page 44 visible in the PDF footer; end page inferred). No DOI (not in ACM DL/Crossref). — [schemeworkshop.org PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf); [INRIA mirror](https://www-sop.inria.fr/indes/scheme2js/files/schemews2007.pdf)
-- Abstract: "we present our adaption of exception-based continuations to JavaScript. The enhanced technique deals with closures and features improvements that reduce the cost of the work-around for the missing goto-instruction... Our benchmarks show that under certain conditions continuations are still expensive, but are often viable." — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- Why not CPS: in their setup two handwritten CPS benchmarks (fib, nested) "were 30 and 130 times slower than the native versions"; CPS also changes calling convention. — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- Lineage stated by Loitsch: "Our work is an adaption and evolution of the suspension and migration techniques presented in Tao's thesis (Tao 2001) and Sekiguchi et al.'s paper (Sekiguchi et al. 2001). Pettyjohn et al. later extended this technique for call/cc (Pettyjohn et al. 2005)." — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- Mechanism: suspend throws a special exception; instrumented "unsafe calls" catch it, save locals and a resumption index; restore uses a global restoration flag and a `switch(goto)` to emulate jumps back to the saved call site, re-invoking the next saved function until `suspend` is reached; Sec. 3 extends suspend/resume to call/cc, handling mutated captured variables (they track changes/update the continuation rather than boxing, "for efficiency reasons"). Optimizations include copying code from jump target to jump origin to reduce goto-emulation cost and only instrumenting calls that may reach a capture. — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- **Overhead (instrumentation only, continuations never invoked; Pentium 4 3.4GHz, Firefox 2.0.0.3, Opera 9.20, Konqueror 3.5.7; raw = 1.0):** Firefox suspend/resume from 1.1x (Mbrot) to 4.1x (Tak); Opera up to 16.9x (Tak, suspend/resume) and 11.1x (Towers); Konqueror 1.0x-3.1x. "Compared to the uninstrumented version continuation-enabled code was however up to 4.1 times slower" (Firefox). Benchmarks were deliberately modified to defeat Scm2Js's typing pass (which otherwise removed instrumentation from all but one benchmark). — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- Scm2Js reference given by Loitsch: Loitsch and Serrano 2007 (Hop client-side compilation) — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf) (Loitsch & Serrano 2007 metadata not verified)
-- Other JS approaches listed by Loitsch: Narrative JavaScript and djax (unnest + while/switch state machine), jwacs and Links (CPS). — [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
-- **Stopify citation (verified):** Samuel Baxter, Rachit Nigam, Joe Gibbs Politz, Shriram Krishnamurthi, Arjun Guha. "Putting in all the stops: execution control for JavaScript." PLDI 2018, pp. 30-45. DOI 10.1145/3192366.3192370 (SIGPLAN Notices 53(4), DOI 10.1145/3296979.3192370) — [Crossref](https://doi.org/10.1145/3192366.3192370); [arXiv 1802.02974](https://arxiv.org/abs/1802.02974)
-- Stopify strategies: default "checked-return continuations" (every call checks whether in capture mode; frames reified on return, restore mode re-enters via `reenter` of next frame, driver loop at top-level); "exceptional continuations approach [Loitsch 2007]... C throws a special exception and every function application is guarded by an exception handler that catches the special exception, reifies the stack frame, and re-throws it... exception handlers come at a cost"; "eager continuations" maintain a shadow stack [Thivierge & Feeley 2012]. "Both checked-return and exceptional continuations reify the stack lazily." Best strategy varies by browser. — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- Stopify handles re-entering `catch`/`finally` in restore mode by saving caught exception / returned value in locals. — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- Stopify rejected CPS and generators: "cps and generators are 3x and 2x slower than the approach we present." — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- Stopify overhead: median slowdown varies by source compiler, e.g. PyJS 1.7x-3.8x across platforms, ScalaJS 11.8x-23.9x; Octane median 1.3x vs Kraken 41.0x. — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- Stopify does not discuss serialization of continuations (no occurrence of "serializ"/"persist" in the paper text). — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- **Doppio (verified):** John Vilk, Emery D. Berger. "Doppio: breaking the browser language barrier." PLDI 2014, pp. 508-518. DOI 10.1145/2594291.2594293 — [Crossref](https://doi.org/10.1145/2594291.2594293). Per Stopify: "Doppio and Whalesong implement bytecode interpreters in the browser that do not use the JavaScript stack. Therefore, they can suspend and resume execution." — [arXiv PDF](https://arxiv.org/pdf/1802.02974)
-- **Whalesong (verified):** Danny Yoo, Shriram Krishnamurthi. "Whalesong: running Racket in the browser." DLS 2013, pp. 97-108. DOI 10.1145/2508168.2508172 — [Crossref](https://doi.org/10.1145/2508168.2508172)
-- **Thivierge & Feeley (verified):** "Efficient compilation of tail calls and continuations to JavaScript." Scheme Workshop 2012, pp. 47-57. DOI 10.1145/2661103.2661108 — [Crossref](https://doi.org/10.1145/2661103.2661108)
+Exception-based capture comes from the thread-migration work of Sekiguchi et al. and Tao. The stack-inspection theory comes from Clements and Felleisen.
 
-### Inferences
-- By 2007 (Loitsch) the exception-based technique was already an explicitly recognized family ("exception-based continuations") with three prior published instances (Sekiguchi, Tao, Pettyjohn). Second Life's 2007-2008 work is contemporaneous with Loitsch and after Pettyjohn.
-- Loitsch's measured 1.1x-4.1x (Firefox) instrumentation overhead is a useful external reference point for any Second Life overhead numbers.
+Sources:
 
-### Gaps
-- Exact end page of Loitsch's paper (likely 45) not confirmed from a table of contents.
+- Sekiguchi, Sakamoto, Yonezawa (2001) and Tao (2001): see [jvm_clr_migration_prior_art.md](jvm_clr_migration_prior_art.md). Tao's thesis: University of Utah, 2001, adviser Gary Lindstrom, ProQuest AAI3005121 (search).
+- John Clements, Matthias Felleisen. "A Tail-Recursive Machine with Stack Inspection." *ACM TOPLAS* 26(6):1029–1052, 2004. [doi:10.1145/1034774.1034778](https://doi.org/10.1145/1034774.1034778). Conference version: ESOP 2003, pp. 22–37, [doi:10.1007/3-540-36575-3_3](https://doi.org/10.1007/3-540-36575-3_3).
+- John Clements. *Portable and High-Level Access to the Stack with Continuation Marks.* PhD dissertation, Northeastern University, February 2006. [PDF](https://www2.ccs.neu.edu/racket/pubs/dissertation-clements.pdf)
+- John Clements, Ayswarya Sundaram, David Herman. "Implementing Continuation Marks in JavaScript." Workshop on Scheme and Functional Programming, 2008 (search).
+- Andrew Tolmach, Andrew Appel. "Debugging Standard ML Without Reverse Engineering." LFP 1990, pp. 1–12. [doi:10.1145/91556.91564](https://doi.org/10.1145/91556.91564). Journal version: *J. Functional Programming* 5(2):155–200, 1995. The debugger instruments user source and checkpoints with SML/NJ's own `call/cc`. It does not use exceptions for capture (search).
 
-## 4. Scheme and other languages on CLR/JVM; Scala selective CPS (contrast)
+## 3. JavaScript
 
-### Takeaway
-Mainstream Scheme-on-VM systems either give up on re-entrant continuations (Bigloo.NET, Kawa, IronScheme: escape-only via exceptions) or heap-allocate the stack (SISC). Scala's continuations plugin uses type-directed selective CPS, not exception unwinding. A later MSc thesis ported the Pettyjohn technique to Kawa/JVM.
+Loitsch (2007) adapted the technique to JavaScript, with full `call/cc`. Stopify (2018) offers three capture strategies. Neither serializes continuations. Doppio and Whalesong avoid the problem by running interpreters that keep their own stacks on the heap.
 
-### Cited Findings
-- **Bigloo.NET (verified):** Yannis Bres, Bernard Paul Serpette, Manuel Serrano. "Bigloo.NET: compiling Scheme to .NET CLR." Journal of Object Technology 3(9), p. 71ff, Oct 2004. DOI 10.5381/jot.2004.3.9.a4 — [Crossref](https://doi.org/10.5381/jot.2004.3.9.a4). Cited by Pettyjohn et al. as an implementation that gives up first-class continuations, and for the observation that JITs are less efficient on code managing its own stack. — [Pettyjohn et al.](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf)
-- **SISC:** cited by Pettyjohn et al. ("Miller, S. SISC. http://sisc.sourceforge.net") as the heap-allocated-stack strategy. — [Pettyjohn et al.](https://cs.brown.edu/~sk/Publications/Papers/Published/pcmkf-cont-from-gen-stack-insp/paper.pdf) (Miller's own SISC paper metadata not verified)
-- **Kawa:** "Kawa continuations are implemented using Java exceptions, and can be used to prematurely exit (throw), but not to implement co-routines"; call/cc is "upwards only". — [Kawa internals: Scheme complications](https://www.gnu.org/software/kawa/internals/complications.html); [KawaLisp98 paper](https://www.sourceware.org/kawa/papers/KawaLisp98-html/x881.html)
-- **Bernardini MSc thesis, "First-Class Continuations on the Java Virtual Machine"** (supervisor Matteo Pradella; ~2015, institution presumably Politecnico di Milano — UNVERIFIED): implements call/cc in Kawa via "generalized stack inspection"; "shows how the exception handling feature... can be exploited to implement first-class continuations in an environment without stack manipulation primitives"; throws a `ContinuationException` and accumulates heap frame objects; optional compiler pass. — [thesis site](https://andrebask.github.io/thesis/)
-- **IronScheme:** escape-only continuations on CLR (a discussion references "the continuations limitation on IronScheme") — [IronScheme discussion #108](https://github.com/IronScheme/IronScheme/discussions/108) (weak source; detail UNVERIFIED)
-- **Scala (verified):** Tiark Rompf, Ingo Maier, Martin Odersky. "Implementing first-class polymorphic delimited continuations by a type-directed selective CPS-transform." ICFP 2009, pp. 317-328. DOI 10.1145/1596550.1596596 — [Crossref](https://doi.org/10.1145/1596550.1596596). Mechanism (per title/known design): only code whose types are annotated as capturing (`@cps`) is CPS-transformed; shift/reset delimited continuations; no exception unwinding.
+Sources:
 
-### Inferences
-- The positioning contrast is clean: exception-based lazy capture (Pettyjohn/Loitsch/Stopify-exceptional) vs. heap stacks (SISC, Doppio, Whalesong), vs. (selective) CPS (Scala, Links, jwacs), vs. giving up (Bigloo.NET, Kawa, IronScheme).
+- Florian Loitsch. "Exceptional Continuations in JavaScript." 2007 Workshop on Scheme and Functional Programming, Freiburg, Université Laval Technical Report DIUL-RT-0701, starting at p. 37. No DOI. [PDF](https://www.schemeworkshop.org/2007/procPaper4.pdf)
+- Lineage: "Our work is an adaption and evolution of the suspension and migration techniques presented in Tao's thesis (Tao 2001) and Sekiguchi et al.'s paper (Sekiguchi et al. 2001). Pettyjohn et al. later extended this technique for call/cc (Pettyjohn et al. 2005)."
+- Mechanism: suspend throws a special exception. Instrumented calls catch it and save locals and a resumption index. Restore sets a global flag and uses a `switch` to emulate the jump back to the saved call site.
+- Why not CPS: two hand-written CPS benchmarks "were 30 and 130 times slower than the native versions".
+- Overhead of instrumentation alone, with no continuation captured, relative to uninstrumented code: Firefox 2.0 from 1.1× to 4.1×; Opera 9.2 up to 16.9×; Konqueror 3.5 from 1.0× to 3.1×. The benchmarks were modified to stop the compiler's typing pass from removing the instrumentation.
+- Samuel Baxter, Rachit Nigam, Joe Gibbs Politz, Shriram Krishnamurthi, Arjun Guha. "Putting in All the Stops: Execution Control for JavaScript." PLDI 2018, ACM, pp. 30–45. [doi:10.1145/3192366.3192370](https://doi.org/10.1145/3192366.3192370). [arXiv 1802.02974](https://arxiv.org/abs/1802.02974)
+- Stopify's strategies: checked-return (every call checks whether a capture is in progress); exceptional, after Loitsch ("every function application is guarded by an exception handler that catches the special exception, reifies the stack frame, and re-throws it… exception handlers come at a cost"); and eager, which keeps a shadow stack. "Both checked-return and exceptional continuations reify the stack lazily." The fastest strategy differs between browsers.
+- Stopify rejected CPS and generators as "3x and 2x slower than the approach we present".
+- Stopify's median slowdowns depend on the source compiler: PyJS 1.7×–3.8× across platforms, ScalaJS 11.8×–23.9×. Octane median 1.3×, Kraken 41.0×.
+- The Stopify paper does not mention serializing or persisting continuations.
+- John Vilk, Emery Berger. "Doppio: Breaking the Browser Language Barrier." PLDI 2014, pp. 508–518. [doi:10.1145/2594291.2594293](https://doi.org/10.1145/2594291.2594293)
+- Danny Yoo, Shriram Krishnamurthi. "Whalesong: Running Racket in the Browser." DLS 2013, pp. 97–108. [doi:10.1145/2508168.2508172](https://doi.org/10.1145/2508168.2508172)
+- Eric Thivierge, Marc Feeley. "Efficient Compilation of Tail Calls and Continuations to JavaScript." Scheme Workshop 2012, pp. 47–57. [doi:10.1145/2661103.2661108](https://doi.org/10.1145/2661103.2661108)
 
-### Gaps
-- Could not verify details of IronScheme's call/cc implementation or SISC's own publication.
-- Did not find any other published "Continuations on .NET" paper beyond Pettyjohn 2005 in this pass.
+Not verified:
 
-## 5. Serializable continuations in dynamic languages / web frameworks
+- The last page of Loitsch's paper (probably 45).
+- The Loitsch figures and the Stopify ScalaJS and CPS figures were read from the PDFs in September and not re-confirmed in November.
 
-### Takeaway
-Serializable continuations are well established: PLT/Racket stateless servlets (Pettyjohn 2005 -> McCarthy ICFP 2009 -> OOPSLA 2010) serialize source-transformed continuations (ANF + marks + defunctionalization) into ~100-byte records; Stackless Python pickles running tasklets; Pluto/Eris persist suspended Lua coroutines. The runtime-level approaches (Stackless, Eris, Seaside) rely on interpreter/VM-internal access to heap frames rather than exception unwinding.
+## 4. Scheme on the JVM and CLR; Scala
 
-### Cited Findings
-- **McCarthy 2009 (verified):** Jay A. McCarthy. "Automatically RESTful web applications: marking modular serializable continuations." ICFP 2009, pp. 299-310. DOI 10.1145/1596550.1596594 (SIGPLAN Notices DOI 10.1145/1631687.1596594) — [Crossref](https://doi.org/10.1145/1596550.1596594); [author PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-  - "Our modular RESTful transformation is based on one from Pettyjohn et al. (2005)"; it extends it to support continuation marks in the source language; "standard modular λ-lifting and defunctionalization transformations encode all values into serializable representations that can be sent to the client." — [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-  - "Each continuation record is scarcely more than 100 bytes... Each function is serialized as a unique identifier that refers to the compiled code and the captured values of free variables." — [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-  - "Our system uses 10 percent (or less) of the memory required by previous approaches." — [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-  - Limitation: higher-order third-party library procedures (e.g. `map` over a function that captures) cannot be used because untransformed frames aren't recorded; detected at runtime per Pettyjohn et al. — [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-  - Notes marks "can be implemented for both C# (Pettyjohn et al. 2005) and JavaScript (Clements et al. 2008)". — [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
-- **McCarthy 2010 (verified):** "The two-state solution: native and serializable continuations accord." OOPSLA 2010, pp. 567-582. DOI 10.1145/1869459.1869506 — [Crossref](https://doi.org/10.1145/1869459.1869506); [Racket blog](https://blog.racket-lang.org/2010/10/the-two-state-solution-native-and-serializable-continuations-accord.html)
-- **Racket stateless servlets (docs):** pipeline: remove letrec, ANF, record continuation marks, eliminate call/cc via mark inspection, defunctionalize "with a serializable data-structure for each lambda"; serialized continuations go to URL via "stuffers" (serialize, gzip, MD5-indexed store); "your server can restart in the middle of a long running Web interaction"; restrictions: lexical values must be serializable, no `parameterize`, continuations must not be in the context of another (untransformed) module. — [Racket docs](https://docs.racket-lang.org/web-server/stateless.html)
-- **Stackless Python:** running tasklets can be pickled mid-execution and unpickled to resume, even on another platform; frames are pickled only inside tasklets/generators/coroutines; tasklets calling C functions cannot be unpickled; no cross-minor-version unpickling. — [Stackless docs: pickling](https://stackless.readthedocs.io/en/latest/library/stackless/pickling.html)
-- **Lua Pluto / Eris:** Eris persists "tables, closures and threads" including "yielded coroutines, which is very handy for saving long running, multi-session scripting systems"; Eris is "essentially a rewrite of Pluto, targeting Lua 5.2"; C functions cannot be persisted (use permanents table); "no running thread can be persisted, only suspended ones"; works on internal Lua VM structures. — [Eris repo](https://github.com/fnuecke/eris)
-- **Seaside (verified metadata):** Stéphane Ducasse, Adrian Lienhard, Lukas Renggli. "Seaside: A Flexible Environment for Building Dynamic Web Applications." IEEE Software 24(5), pp. 56-63, 2007. DOI 10.1109/MS.2007.144 — [Crossref](https://doi.org/10.1109/ms.2007.144). Mechanism (UNVERIFIED in this pass): continuations built by copying Smalltalk's reified heap contexts (`thisContext`), not serialized across processes.
+Scheme implementations on these VMs either restrict continuations to escaping (Bigloo.NET, Kawa, IronScheme) or keep the stack on the heap (SISC). Scala's continuations plugin uses a selective CPS transform, not exceptions.
 
-### Inferences
-- The Racket line is the strongest "serializable + transformation-based" prior art; it's source-level (Scheme macros), not CIL-level, and it does not use exceptions in Racket (it uses native continuation marks), while the exception variant exists only in the 2005 C# sketch.
-- Lua Pluto/Eris is the nearest *game/virtual-world scripting* analog (persisting suspended scripts), and Stackless Python was used in EVE Online (UNVERIFIED claim, not sourced here) — both rely on interpreter-level stack access, which Mono/CLR JIT'd code lacks; that is the natural gap the Second Life approach fills.
+Sources:
 
-### Gaps
-- Could not read Pluto's original documentation (Ben Sunshine-Hill) or verify its first release date.
-- No formal publication found for Stackless pickling or Pluto/Eris (they're software, cite repos/docs).
-- Seaside's continuation mechanism and serializability not verified from primary source.
+- Yannis Bres, Bernard Serpette, Manuel Serrano. "Bigloo.NET: Compiling Scheme to .NET CLR." *Journal of Object Technology* 3(9):71–94, 2004. [doi:10.5381/jot.2004.3.9.a4](https://doi.org/10.5381/jot.2004.3.9.a4)
+- SISC: Scott G. Miller, "SISC: A Complete Scheme Interpreter in Java", 2002 (search; venue not determined).
+- Kawa: "Kawa continuations are implemented using Java exceptions, and can be used to prematurely exit (throw), but not to implement co-routines". [Kawa internals](https://www.gnu.org/software/kawa/internals/complications.html)
+- Andrea Bernardini, "First-Class Continuations on the Java Virtual Machine", MSc thesis, Politecnico di Milano, 2014–2015, supervisor Matteo Pradella. It implements `call/cc` in Kawa with the Pettyjohn technique. The work was not merged into Kawa (search). [Thesis site](https://andrebask.github.io/thesis/)
+- IronScheme: `call/cc` "does not support reifying continuations… the continuation must be called from the dynamic extent" (project wiki, search).
+- Tiark Rompf, Ingo Maier, Martin Odersky. "Implementing First-Class Polymorphic Delimited Continuations by a Type-Directed Selective CPS-Transform." ICFP 2009, pp. 317–328. [doi:10.1145/1596550.1596596](https://doi.org/10.1145/1596550.1596596)
+
+## 5. Other systems that serialize continuations
+
+Racket's stateless servlets serialize continuations produced by a source transformation. Stackless Python, Pluto and Eris serialize suspended coroutines from inside the interpreter, which has direct access to its frames. Seaside copies Smalltalk contexts but does not serialize them.
+
+Sources:
+
+- Jay McCarthy. "Automatically RESTful Web Applications: Marking Modular Serializable Continuations." ICFP 2009, ACM, pp. 299–310. [doi:10.1145/1596550.1596594](https://doi.org/10.1145/1596550.1596594). [PDF](https://jeapostrophe.github.io/home/static/icfp065-mccarthy.pdf)
+  - "Our modular RESTful transformation is based on one from Pettyjohn et al. (2005)."
+  - "Each continuation record is scarcely more than 100 bytes."
+  - "Our system uses 10 percent (or less) of the memory required by previous approaches."
+  - Limitation: a higher-order library procedure that was not transformed cannot be on the stack at capture.
+- Jay McCarthy. "The Two-State Solution: Native and Serializable Continuations Accord." OOPSLA 2010, pp. 567–582. [doi:10.1145/1869459.1869506](https://doi.org/10.1145/1869459.1869506)
+- Racket documentation, "Stateless Servlets": the pipeline is A-normal form, continuation marks, removal of `call/cc` by mark inspection, then defunctionalization "with a serializable data-structure for each lambda". "Your server can restart in the middle of a long running Web interaction." [Docs](https://docs.racket-lang.org/web-server/stateless.html)
+- Stackless Python: running tasklets can be pickled and resumed elsewhere. Tasklets that are inside a C function cannot. [Docs](https://stackless.readthedocs.io/en/latest/library/stackless/pickling.html). CCP uses Stackless Python in EVE Online, on client and server (search).
+- Pluto: Ben Sunshine-Hill announced the first alpha on the Lua mailing list on 2 June 2004 (search). [Post](https://lua-users.org/lists/lua-l/2004-06/msg00019.html)
+- Eris: "essentially a rewrite of Pluto, targeting Lua 5.2". It persists yielded coroutines. C functions cannot be persisted, and "no running thread can be persisted, only suspended ones". [Repository](https://github.com/fnuecke/eris)
+- Stéphane Ducasse, Adrian Lienhard, Lukas Renggli. "Seaside: A Flexible Environment for Building Dynamic Web Applications." *IEEE Software* 24(5):56–63, 2007. [doi:10.1109/MS.2007.144](https://doi.org/10.1109/MS.2007.144). Seaside copies the chain of `MethodContext` objects in the image. Sessions are "not serializable in Seaside/Smalltalk, but in theory it is possible" (Seaside mailing list, 2005; search).
+
+Racket is the closest prior system that both transforms the program and serializes the result. It works on Scheme source and uses Racket's native continuation marks. The exception-based variant exists only in the 2005 C# example.
+
+Not verified:
+
+- No paper describing Stackless pickling, Pluto or Eris was found. Cite the software.
