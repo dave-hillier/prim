@@ -2,7 +2,7 @@
 
 **Dave Hillier**
 
-January 2026 (revised September 2026)
+January 2026 (revised November 2026)
 
 ---
 
@@ -32,7 +32,7 @@ We cannot read the stack, but we can transform the code so that it saves and res
 
 3. **Preemption that produces serializable state**: Yield points on loop back-edges combined with an instruction budget. Both are established techniques [35, 36, 37]; what differs here is that exhausting the budget captures a continuation that can be persisted or moved to another machine, rather than parking or terminating the thread (§5).
 
-4. **Validation of deserialized continuation state**: Verifier-style checks of method identity, yield point bounds, exact slot counts, slot types and resource limits applied to frames arriving from outside, motivated by a demonstrated attack on an unvalidated continuation format [41] (§8).
+4. **Validation of deserialized continuation state**: Checks of method identity, yield point bounds, exact slot counts, slot types and resource limits applied to frames arriving from outside. Espresso already checks restored frames against its bytecode verifier's results [5]. Prim adds an allow-list: only registered methods and their registered yield points are accepted. A published attack on Espresso [41] used frames that were well formed but named arbitrary library methods (§8).
 
 ### 1.2 Context
 
@@ -441,7 +441,9 @@ The caller chain is recursive, so a naive serializer recurses once per frame. De
 
 ## 8. Security Model
 
-Deserializing untrusted continuation state is dangerous. As Espresso's documentation warns: "Deserializing a continuation supplied by an attacker will allow complete takeover of the JVM" [5]. A 2025 write-up [41] forged Espresso frame records with an attacker-chosen method, bytecode index and locals, resumed them into JDK code, and reached `Runtime.exec`. The general problem of deserialization gadgets is well documented [39, 40].
+Deserializing untrusted continuation state is dangerous. Espresso's documentation warns: "Deserializing a continuation supplied by an attacker will allow complete takeover of the JVM" [5]. A 2025 write-up [41] forged Espresso frame records with an attacker-chosen method, bytecode index and locals, resumed them into JDK code, and reached `Runtime.exec`. The general problem of deserialization gadgets is well documented [39, 40].
+
+Espresso does check restored frames. Its documentation lists the checks: resumption happens only at an `invoke` bytecode, the recorded frame data is consistent with what the bytecode verifier computed, and the last frame is the suspend call [5]. It describes them as minimal and intended only to prevent a VM crash. The forged frames in [41] pass these checks, because each one is a valid frame of a real JDK method. Espresso does not restrict which methods may appear in a continuation.
 
 The idea of checking migrating state on arrival is older. Farmer, Guttman and Swarup proposed *state appraisal* for mobile agents in 1996: functions that check invariants of an agent's state before a host grants it privileges [38]. The checks below apply the same idea, with the rules taken from the transformation itself.
 
@@ -470,7 +472,7 @@ Before resuming a deserialized continuation:
 
 **Resource limits**: Stack depth and slot counts must be bounded.
 
-These checks are the bytecode verifier's frame typing, applied to state that arrives from outside rather than to code.
+The slot checks are the bytecode verifier's frame typing, applied to state that arrives from outside rather than to code; Espresso does the same [5]. The method identity and yield point checks are what stop an attack like [41]: a frame naming a method the host did not register is rejected, however well formed it is.
 
 Validation after deserialization is not sufficient on its own. By the time a validator runs, the deserializer has already constructed every object in the graph, and constructors or setters can have side effects. The type whitelist must also be enforced *during* deserialization, before an object is instantiated.
 
@@ -504,11 +506,11 @@ Espresso implements Java on Truffle, an interpreter framework. Truffle provides 
 
 Espresso runs inside an interpreter framework that controls execution. Prim transforms code that a runtime it does not control will JIT-compile, so everything capture and restore need must be injected at transformation time.
 
-Espresso also captures by throwing: each frame is copied into a `HostFrameRecord`, and the exception is rethrown. Prim's frame record uses the same name. Espresso's continuations are serializable, but its documentation warns against resuming state from anywhere else (§8).
+Espresso also captures by throwing: each frame is copied into a `HostFrameRecord`, and the exception is rethrown. Prim's frame record uses the same name. Espresso's continuations are serializable. It checks restored frames against the bytecode verifier's results, and its documentation warns against resuming state from anywhere else (§8).
 
 ### 9.3 WasmFX
 
-WebAssembly's stack switching proposal [3, 19], at phase 3 of the standardization process as of 2026, adds continuation primitives to the bytecode:
+WebAssembly's stack switching proposal [3, 19] reached phase 3 of the standardization process in October 2025. No browser ships it as of November 2026. It adds continuation instructions to the bytecode:
 
 - `cont.new`: Create a continuation from a function
 - `suspend`: Yield control with a typed tag
@@ -585,7 +587,7 @@ Serializable continuations can be implemented on JIT-compiled managed runtimes b
 
 The same pattern has been published at least five times since 1998: for Java mobile agents, Scheme on .NET, JavaScript, WebAssembly and Espresso. Few of those systems combine it with serialization, validation of state from outside, and production use.
 
-That combination matters more, not less, as runtimes add native continuations. WasmFX, Loom, OCaml's effect handlers [20] and .NET's runtime-level async are all opaque and one-shot; Espresso, the main serializable design, has been shown exploitable through exactly the frame fields that §8 validates; and industrial durable execution replays effect logs to avoid serializing stacks at all. When persistence or migration is required, program transformation remains a practical approach.
+Runtimes are adding continuations of their own, but not serializable ones. WasmFX, Loom and OCaml's effect handlers [20] provide one-shot continuations that cannot be serialized, and .NET's runtime async (.NET 11) does not expose its continuations at all. Espresso is the one mainstream runtime that serializes them; it has been exploited with forged frames that passed its checks [41]. Durable execution systems replay effect logs instead of serializing stacks. On a stock runtime, program transformation is still the way to get a continuation that can be stored or moved.
 
 ---
 
@@ -599,7 +601,7 @@ That combination matters more, not less, as runtimes add native continuations. W
 
 [4] Pressler, R., Bateman, A. (2023). "JEP 444: Virtual Threads." OpenJDK. https://openjdk.org/jeps/444
 
-[5] GraalVM Team. (2024). "Espresso: Java on Truffle – Continuation API." https://www.graalvm.org/reference-manual/espresso/continuations/
+[5] GraalVM Team. (2024). "Espresso: Java on Truffle – Continuation API." https://www.graalvm.org/reference-manual/espresso/continuations/ (source: https://github.com/oracle/graal/blob/master/espresso/docs/continuations.md)
 
 [6] Stadler, L., Wimmer, C., Würthinger, T., Mössenböck, H., Rose, J. (2009). "Lazy Continuations for Java Virtual Machines." In *Proceedings of PPPJ 2009*, ACM, 143–152. doi:10.1145/1596655.1596679
 
@@ -617,7 +619,7 @@ That combination matters more, not less, as runtimes add native continuations. W
 
 [13] Danvy, O., Filinski, A. (1990). "Abstracting Control." In *Proceedings of LISP and Functional Programming*, ACM, 151–160.
 
-[14] Hillier, D. (2015). "Second Life Mono Internals." https://davehillier.net/2015/03/11/second-life-mono-internals/
+[14] Hillier, D. (2015). "IIRC: Second Life Mono Internals." https://davehillier.net/2015/03/11/second-life-mono-internals/
 
 [15] Aho, A. V., Lam, M. S., Sethi, R., Ullman, J. D. (2006). *Compilers: Principles, Techniques, and Tools* (2nd ed.). Addison-Wesley.
 
@@ -635,23 +637,23 @@ That combination matters more, not less, as runtimes add native continuations. W
 
 [22] Elnozahy, E. N., Alvisi, L., Wang, Y., Johnson, D. B. (2002). "A Survey of Rollback-Recovery Protocols in Message-Passing Systems." *ACM Computing Surveys*, 34(3), 375–408.
 
-[23] Fünfrocken, S. (1998). "Transparent Migration of Java-Based Mobile Agents." In *Mobile Agents (MA '98)*, Springer, 26–37. doi:10.1007/BFb0057646
+[23] Fünfrocken, S. (1998). "Transparent Migration of Java-Based Mobile Agents." In *Mobile Agents (MA '98)*, LNCS 1477, Springer, 26–37. doi:10.1007/BFb0057646
 
 [24] Sekiguchi, T., Masuhara, H., Yonezawa, A. (1999). "A Simple Extension of Java Language for Controllable Transparent Migration and its Portable Implementation." In *Coordination Languages and Models (COORDINATION 1999)*, LNCS 1594, Springer, 211–226. doi:10.1007/3-540-48919-3_16
 
-[25] Truyen, E., Robben, B., Vanhaute, B., Coninx, T., Joosen, W., Verbaeten, P. (2000). "Portable Support for Transparent Thread Migration in Java." In *Agent Systems, Mobile Agents, and Applications (ASA/MA 2000)*, Springer, 29–43. doi:10.1007/978-3-540-45347-5_4
+[25] Truyen, E., Robben, B., Vanhaute, B., Coninx, T., Joosen, W., Verbaeten, P. (2000). "Portable Support for Transparent Thread Migration in Java." In *Agent Systems, Mobile Agents, and Applications (ASA/MA 2000)*, LNCS 1882, Springer, 29–43. doi:10.1007/978-3-540-45347-5_4
 
-[26] Sakamoto, T., Sekiguchi, T., Yonezawa, A. (2000). "Bytecode Transformation for Portable Thread Migration in Java." In *Agent Systems, Mobile Agents, and Applications (ASA/MA 2000)*, Springer, 16–28. doi:10.1007/978-3-540-45347-5_3
+[26] Sakamoto, T., Sekiguchi, T., Yonezawa, A. (2000). "Bytecode Transformation for Portable Thread Migration in Java." In *Agent Systems, Mobile Agents, and Applications (ASA/MA 2000)*, LNCS 1882, Springer, 16–28. doi:10.1007/978-3-540-45347-5_3
 
 [27] Sekiguchi, T., Sakamoto, T., Yonezawa, A. (2001). "Portable Implementation of Continuation Operators in Imperative Languages by Exception Handling." In *Advances in Exception Handling Techniques*, LNCS 2022, Springer, 217–233. doi:10.1007/3-540-45407-1_14
 
-[28] Tao, W. (2001). *A Portable Mechanism for Thread Persistence and Migration.* PhD thesis, University of Utah.
+[28] Tao, W. (2001). *A Portable Mechanism for Thread Persistence and Migration.* PhD thesis, University of Utah. ProQuest AAI3005121.
 
 [29] Pettyjohn, G., Clements, J., Marshall, J., Krishnamurthi, S., Felleisen, M. (2005). "Continuations from Generalized Stack Inspection." In *Proceedings of ICFP 2005*, ACM, 216–227. doi:10.1145/1086365.1086393
 
 [30] Loitsch, F. (2007). "Exceptional Continuations in JavaScript." In *Proceedings of the 2007 Workshop on Scheme and Functional Programming*, Université Laval Technical Report DIUL-RT-0701. https://www.schemeworkshop.org/2007/procPaper4.pdf
 
-[31] Srinivasan, S., Mycroft, A. (2008). "Kilim: Isolation-Typed Actors for Java." In *Proceedings of ECOOP 2008*, Springer, 104–128. doi:10.1007/978-3-540-70592-5_6
+[31] Srinivasan, S., Mycroft, A. (2008). "Kilim: Isolation-Typed Actors for Java." In *Proceedings of ECOOP 2008*, LNCS 5142, Springer, 104–128. doi:10.1007/978-3-540-70592-5_6
 
 [32] Apache Software Foundation. "Commons Javaflow." https://commons.apache.org/sandbox/commons-javaflow/
 
@@ -659,11 +661,11 @@ That combination matters more, not less, as runtimes add native continuations. W
 
 [34] Baxter, S., Nigam, R., Politz, J. G., Krishnamurthi, S., Guha, A. (2018). "Putting in All the Stops: Execution Control for JavaScript." In *Proceedings of PLDI 2018*, ACM, 30–45. doi:10.1145/3192366.3192370
 
-[35] Feeley, M. (1993). "Polling Efficiently on Stock Hardware." In *Proceedings of FPCA '93*, ACM. doi:10.1145/165180.165205
+[35] Feeley, M. (1993). "Polling Efficiently on Stock Hardware." In *Proceedings of FPCA '93*, ACM, 179–187. doi:10.1145/165180.165205
 
-[36] Lin, Y., Wang, K., Blackburn, S. M., Hosking, A. L., Norrish, M. (2015). "Stop and Go: Understanding Yieldpoint Behavior." In *Proceedings of ISMM 2015*, ACM, 70–80.
+[36] Lin, Y., Wang, K., Blackburn, S. M., Hosking, A. L., Norrish, M. (2015). "Stop and Go: Understanding Yieldpoint Behavior." In *Proceedings of ISMM 2015*, ACM, 70–80. doi:10.1145/2754169.2754187
 
-[37] Hulaas, J., Binder, W. (2008). "Program Transformations for Light-Weight CPU Accounting and Control in the Java Virtual Machine." *Higher-Order and Symbolic Computation*, 21, 119–146. doi:10.1007/s10990-008-9026-4
+[37] Hulaas, J., Binder, W. (2008). "Program Transformations for Light-Weight CPU Accounting and Control in the Java Virtual Machine." *Higher-Order and Symbolic Computation*, 21(1–2), 119–146. doi:10.1007/s10990-008-9026-4
 
 [38] Farmer, W. M., Guttman, J. D., Swarup, V. (1996). "Security for Mobile Agents: Authentication and State Appraisal." In *Computer Security – ESORICS '96*, LNCS 1146, Springer, 118–130. doi:10.1007/3-540-61770-1_31
 
